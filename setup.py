@@ -45,7 +45,7 @@ extra_compile_args = {
     ], 
     "nvcc": [
         "-O3" if not debug_mode else "-O0",
-        "-std=c++14",
+        "-std=c++20",
         # define TORCH_TARGET_VERSION with min version 2.10 to expose only the
         # stable API subset from torch
         # Format: [MAJ 1 byte][MIN 1 byte][PATCH 1 byte][ABI TAG 5 bytes]
@@ -61,15 +61,20 @@ if debug_mode:
     extra_link_args += ["-O0", "-g"]
 
 this_dir = os.path.dirname(os.path.abspath(__file__))
+package_dir = os.path.join(this_dir, library_name)
 
-csrc_dir = os.path.join(this_dir, "csrc")
+csrc_dir = os.path.join(package_dir, "csrc")
 cpp_sources = glob.glob(os.path.join(csrc_dir, "*.cpp"), recursive=True)
+print(f"!!!!!!!!!!cpp_sources: {cpp_sources}")
 
 cuda_dir = os.path.join(csrc_dir, "cuda")
 cuda_sources = glob.glob(os.path.join(cuda_dir, "*.cu"), recursive=True)
+print(f"!!!!!!!!!!cuda_sources: {cuda_sources}")
 
 if use_cuda:
     sources = cpp_sources + cuda_sources
+
+print(f"Compiling {library_name} with CUDA support")
 
 ext_modules = [
     extension_type(
