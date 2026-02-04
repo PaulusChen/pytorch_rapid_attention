@@ -5,7 +5,7 @@ import rapid_attention as RA
 
 
 project_root = RA.utils.common.find_project_root()
-train_data_path = project_root / "datasets" / "deepctrl" / "deepctrl-sft-data" / "sft_data_zh.jsonl"
+train_data_path = project_root / "datasets" / "deepctrl" / "deepctrl-sft-data" / "sft_data_zh_clean.jsonl"
 tokenizer_dir = project_root / "learned_tokenizer"
 vocab_size = 6400
 
