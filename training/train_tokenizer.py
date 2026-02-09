@@ -1,5 +1,6 @@
 import os
 import json
+import random
 from tokenizers import decoders, models, pre_tokenizers, trainers, Tokenizer
 import rapid_attention as RA
 
@@ -7,13 +8,28 @@ import rapid_attention as RA
 project_root = RA.utils.common.find_project_root()
 train_data_path = project_root / "datasets" / "deepctrl" / "deepctrl-sft-data" / "sft_data_zh_clean.jsonl"
 tokenizer_dir = project_root / "learned_tokenizer"
-vocab_size = 6400
+vocab_size = 12800
+
 
 def tokenizer_texts_iter(data_path):
+    print(f"读取数据文件: {data_path}")
+    train_lines = 0
     with open(data_path, "r", encoding="utf-8") as f:
         for line in f:
-            item = json.loads(line)
-            yield item["text"]
+            # 只采样10%的数据进行分词器训练
+            if random.random() > 0.1:
+                continue
+            train_lines += 1
+            try:
+                item = json.loads(line)
+                text = item.get("text", "")
+                if not text:
+                    continue
+                yield text
+            except json.JSONDecodeError:
+                print(f"跳过无效行: {line}")
+                continue
+    print(f"训练数据总行数: {train_lines}")
 
 
 def train_tokenizer(data_path, tokenizer_dir, vocab_size):
@@ -25,6 +41,8 @@ def train_tokenizer(data_path, tokenizer_dir, vocab_size):
         "<|im_start|>",
         "<|im_end|>",],
                                   show_process=True,
+                                  max_memory={ 0: "40GB"},
+                                  min_frequency=2,
                                   initial_alphabet=pre_tokenizers.ByteLevel.alphabet())
     texts_iter = tokenizer_texts_iter(data_path)
     tokenizer.train_from_iterator(texts_iter, trainer=trainer)
@@ -34,7 +52,7 @@ def train_tokenizer(data_path, tokenizer_dir, vocab_size):
     assert tokenizer.token_to_id("<|im_end|>")  == 2, "确保<|im_end|>的ID为2"
     os.makedirs(tokenizer_dir, exist_ok=True)
     tokenizer.save(os.path.join(tokenizer_dir, "tokenizer.json"))
-    tokenizer.model.save(tokenizer_dir)
+    tokenizer.model.save(str(tokenizer_dir))
     config = {
         "add_bos_token": False,
         "add_eos_token": False,
@@ -83,4 +101,6 @@ def train_tokenizer(data_path, tokenizer_dir, vocab_size):
     print(f"分词器训练完成并保存在: {tokenizer_dir}")
 
 if __name__ == "__main__":
+    if not os.path.exists(tokenizer_dir):
+        os.makedirs(tokenizer_dir)
     train_tokenizer(data_path=train_data_path, tokenizer_dir=tokenizer_dir, vocab_size=vocab_size)
