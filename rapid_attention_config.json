@@ -1,0 +1,13 @@
+{
+    "common_config": {
+        "common_eps": 1e-6,
+        "datasets_relative_path": "datasets"
+    },
+    "tokenizer_config": {
+        "vocab_size": 12800,
+        "tokenizer_train_data_relative_path": "deepctrl/deepctrl-sft-data/sft_data_zh_clean.jsonl",
+        "tokenizer_relative_dir": "tokenizer"
+    },
+    "model_config": {
+    }
+}
