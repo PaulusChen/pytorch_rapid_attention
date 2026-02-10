@@ -31,7 +31,7 @@ class rapid_attention_global_context:
             / rapid_attention_global_context.common_config.datasets_relative_path
         )
         rapid_attention_global_context.tokenizer_config.tokenizer_train_data_path = (
-            rapid_attention_global_context.project_root
+            rapid_attention_global_context.common_config.dataset_path
             / rapid_attention_global_context.tokenizer_config.tokenizer_train_data_relative_path
         )
         rapid_attention_global_context.tokenizer_config.tokenizer_dir = (
