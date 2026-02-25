@@ -19,9 +19,7 @@ class rapid_attention_global_context:
         config_file_content = json.load(
             open(rapid_attention_global_context.config_file_path, "r")
         )
-        for key in ["common_config", "tokenizer_config", "model_config"]:
-            if key not in config_file_content:
-                continue
+        for key in config_file_content.keys():
             # 为每个配置项创建一个属性
             setattr(rapid_attention_global_context, key, rapid_attention_config_obj())
             for sub_key, value in config_file_content[key].items():

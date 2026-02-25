@@ -1,7 +1,9 @@
 {
     "common_config": {
+        "device_type": "cuda",
         "common_eps": 1e-6,
         "datasets_relative_path": "datasets"
+        "seed": 260210
     },
     "tokenizer_config": {
         "vocab_size": 12800,
@@ -9,5 +11,18 @@
         "tokenizer_relative_dir": "tokenizer"
     },
     "model_config": {
+        "hidden_size": 512,
+        "num_hidden_layers": 8,
+        "use_moe": true,
+        "dropout": 0.1,
+        
+    },
+    "train_config": {
+        "epochs": 1,
+        "use_wandb": true,
+        "wandb_project": "paulchen-testing",
+        "batch_size": 32,
+        "learning_rate": 5e-4,
+        "dtype": "bfloat16"
     }
 }
