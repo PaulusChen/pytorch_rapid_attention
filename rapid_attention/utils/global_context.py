@@ -36,5 +36,9 @@ class rapid_attention_global_context:
             rapid_attention_global_context.project_root
             / rapid_attention_global_context.tokenizer_config.tokenizer_relative_dir
         )
+        rapid_attention_global_context.train_config.output_dir = (
+            rapid_attention_global_context.project_root
+            / rapid_attention_global_context.train_config.output_relative_dir
+        )
 
 rapid_attention_global_context.load_config()
