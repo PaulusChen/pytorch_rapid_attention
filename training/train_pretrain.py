@@ -1,9 +1,11 @@
 from torch.utils.data import DistributedSampler
+import os
 import torch
 import time
+import json
+import math
 import rapid_attention
 from pathlib import Path
-from utils.logger import Logger
 from transformers import AutoTokenizer
 from contextlib import nullcontext
 from transformers import PretrainedConfig
@@ -123,9 +125,9 @@ def main():
                 param_group["lr"] = lr
             with ctx:
                 res = model(X)
-                loss = loss_function(res.view(-1, res.size(-1)), Y.view(-1)).view(
+                loss = loss_function(res.logits.view(-1, res.logits.size(-1)), Y.view(-1)).view(
                     Y.size()
-                )
+                ).view(Y.size())
                 loss = (loss * loss_mask).sum() / loss_mask.sum()
                 loss += res.aux_loss
                 loss = loss / GCTX.train_config.accumulation_steps
@@ -155,7 +157,9 @@ def main():
                     )
             if (step + 1) % GCTX.train_config.save_interval == 0:
                 model.eval()
-                checkpoint = f"{GCTX.train_config.output_dir}/pretrain_{GCTX.train_config.hidden_size}.pth"
+                checkpoint = f"{GCTX.train_config.output_dir}/pretrain_{GCTX.model_config.hidden_size}.pth"
+                if not os.path.exists(GCTX.train_config.output_dir):
+                    os.makedirs(GCTX.train_config.output_dir)
                 state_dict = model.state_dict()
                 torch.save(state_dict, checkpoint)
                 model.train()

@@ -40,5 +40,9 @@ class rapid_attention_global_context:
             rapid_attention_global_context.project_root
             / rapid_attention_global_context.train_config.output_relative_dir
         )
+        rapid_attention_global_context.train_config.train_data_path = (
+            rapid_attention_global_context.common_config.dataset_path
+            / rapid_attention_global_context.train_config.train_data_relative_path
+        )
 
 rapid_attention_global_context.load_config()
