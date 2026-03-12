@@ -41,5 +41,11 @@
         "log_interval": 100,
         "save_interval": 100,
         "output_relative_dir": "checkpoints"
+    },
+    "eval_config": {
+        "max_history_len": 10,
+        "max_new_tokens": 8192,
+        "top_p": 0.85,
+        "temperature": 0.85
     }
 }

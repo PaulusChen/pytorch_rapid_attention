@@ -61,7 +61,6 @@ class PretrainDataset(torch.utils.data.Dataset):
 
 def main():
     lm_config = RapidAttentionLMConfig()
-    tokenizer_model_path = Path(GCTX.tokenizer_config.tokenizer_dir)
     ctx = (
         nullcontext()
         if GCTX.common_config.device_type == "cpu"
@@ -83,6 +82,7 @@ def main():
     else:
         wandb = None
 
+    tokenizer_model_path = Path(GCTX.tokenizer_config.tokenizer_dir)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_model_path)
     model = RapidAttentionForCausalLM(lm_config).to(device)
     Logger(
