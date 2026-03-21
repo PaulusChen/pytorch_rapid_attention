@@ -1,18 +1,13 @@
-from torch.utils.data import DistributedSampler
+from model.model_rapid_attention import RapidAttentionLMTrainerContext
 import os
 import torch
 import time
 import json
 import math
-import rapid_attention
-from pathlib import Path
-from transformers import AutoTokenizer
-from contextlib import nullcontext
-from transformers import PretrainedConfig
 from rapid_attention.utils.global_context import (
     rapid_attention_global_context as GCTX,
 )
-from model.model_rapid_attention import RapidAttentionLMConfig
+from model.model_rapid_attention import RapidAttentionLMTrainerContext
 from model.model_rapid_attention import RapidAttentionForCausalLM
 
 
@@ -60,36 +55,13 @@ class PretrainDataset(torch.utils.data.Dataset):
 
 
 def main():
-    lm_config = RapidAttentionLMConfig()
-    ctx = (
-        nullcontext()
-        if GCTX.common_config.device_type == "cpu"
-        else torch.cuda.amp.autocast()
-    )
-
-    device = GCTX.common_config.device if torch.cuda.is_available() else "cpu"
-
-    base_seed = GCTX.common_config.seed
-    torch.manual_seed(base_seed)
-    torch.cuda.manual_seed(base_seed)
-
-    if GCTX.train_config.use_wandb:
-        import wandb
-
-        wandb.init(
-            project=GCTX.train_config.wandb_project, name=lm_config.wandb_run_name
-        )
-    else:
-        wandb = None
-
-    tokenizer_model_path = Path(GCTX.tokenizer_config.tokenizer_dir)
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_model_path)
-    model = RapidAttentionForCausalLM(lm_config).to(device)
+    trainer_ctx = RapidAttentionLMTrainerContext()
+    model = RapidAttentionForCausalLM(trainer_ctx.lm_config).to(trainer_ctx.device)
     Logger(
         f"LLM可训练总参数量：{sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6:.3f} 百万"
     )
     train_ds = PretrainDataset(
-        GCTX.train_config.train_data_path, tokenizer, max_len=lm_config.max_seq_len
+        GCTX.train_config.train_data_path, trainer_ctx.tokenizer, max_len=trainer_ctx.lm_config.max_seq_len
     )
     train_sampler = None
     train_loader = torch.utils.data.DataLoader(
@@ -112,10 +84,10 @@ def main():
     for epoch in range(GCTX.train_config.epochs):
         loss_function = torch.nn.CrossEntropyLoss(reduction="none")
         start_time = time.time()
-        for step, (X, Y, loss_mask) in enumerate(train_loader):
-            X = X.to(GCTX.common_config.device)
-            Y = Y.to(GCTX.common_config.device)
-            loss_mask = loss_mask.to(GCTX.common_config.device)
+        for step, (input_ids, labels, loss_mask) in enumerate(train_loader):
+            input_ids = input_ids.to(trainer_ctx.device)
+            labels = labels.to(trainer_ctx.device)
+            loss_mask = loss_mask.to(trainer_ctx.device)
             lr = get_lr(
                 epoch * iter_per_epoch + step,
                 GCTX.train_config.epochs * iter_per_epoch,
@@ -123,14 +95,11 @@ def main():
             )
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
-            with ctx:
-                res = model(X)
-                loss = loss_function(res.logits.view(-1, res.logits.size(-1)), Y.view(-1)).view(
-                    Y.size()
-                ).view(Y.size())
-                loss = (loss * loss_mask).sum() / loss_mask.sum()
-                loss += res.aux_loss
+            with trainer_ctx.ctx:
+                res = model(input_ids, labels=labels)
+                loss = res.loss + res.aux_loss
                 loss = loss / GCTX.train_config.accumulation_steps
+
             scaler.scale(loss).backward()
 
             if (step + 1) % GCTX.train_config.accumulation_steps == 0:
@@ -146,8 +115,8 @@ def main():
                 Logger(
                     f"Epoch: {epoch} / {GCTX.train_config.epochs}, Step: {step}, IterPerEpoch: {iter_per_epoch}, Loss: {loss.item():.4f}, LR: {lr:.2e}, Time: {spend_time:.2f}s"
                 )
-                if wandb is not None:
-                    wandb.log(
+                if trainer_ctx.wandb is not None:
+                    trainer_ctx.wandb.log(
                         {
                             "train_loss": loss.item(),
                             "learning_rate": optimizer.param_groups[-1]["lr"],

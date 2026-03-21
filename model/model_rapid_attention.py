@@ -1,8 +1,13 @@
+import torch
 from transformers import PretrainedConfig
+from contextlib import nullcontext
+from pathlib import Path
+from transformers import AutoTokenizer
 
 from rapid_attention.utils.global_context import (
     rapid_attention_global_context as GCTX,
 )
+
 
 class RapidAttentionLMConfig(PretrainedConfig):
     model_type = "rapid_attention"
@@ -27,6 +32,29 @@ class RapidAttentionLMConfig(PretrainedConfig):
         self.rope_theta = GCTX.model_config.rope_theta
         self.intermediate_size = GCTX.model_config.intermediate_size
         self.hidden_act = GCTX.model_config.hidden_act
+
+
+
+class RapidAttentionLMTrainerContext:
+    def __init__(self):
+        self.lm_config = RapidAttentionLMConfig()
+        self.ctx = (nullcontext() if GCTX.common_config.device_type == "cpu" else torch.amp.autocast("cuda"))
+        self.device = GCTX.common_config.device if torch.cuda.is_available() else "cpu"
+        base_seed = GCTX.common_config.seed
+        torch.manual_seed(base_seed)
+        torch.cuda.manual_seed(base_seed)
+        if GCTX.train_config.use_wandb:
+            import wandb
+            wandb.init(
+                project=GCTX.train_config.wandb_project, name=self.lm_config.wandb_run_name
+            )
+            self.wandb = wandb
+        else:
+            self.wandb = None
+        tokenizer_model_path = Path(GCTX.tokenizer_config.tokenizer_dir)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_model_path)
+
+
 
 from typing import Optional, Tuple, List, Union
 import math
