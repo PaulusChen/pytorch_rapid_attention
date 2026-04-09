@@ -13,6 +13,7 @@ from model.model_rapid_attention import RapidAttentionForCausalLM
 
 
 def setup_seed(seed):
+    # 推理阶段固定随机种子，主要是为了让采样结果更容易复现。
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -34,6 +35,11 @@ def main():
     lm_config = RapidAttentionLMConfig()
     model = RapidAttentionForCausalLM(lm_config)
 
+    # TODO: 这里没有显式指定 `map_location`。
+    # 如果 checkpoint 保存设备与当前加载设备不一致，可能带来问题。
+    # 你可以自己尝试改成：
+    # TODO: 示例改法
+    # model.load_state_dict(torch.load(get_module_path("pretrain"), map_location=GCTX.common_config.device))
     model.load_state_dict(torch.load(get_module_path("pretrain")))
     model = model.eval().to(GCTX.common_config.device)
 
@@ -52,7 +58,18 @@ def main():
     streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     messages = []
     for idx, prompt in enumerate(prompt_datas if test_mode == 0 else iter(lambda: input('🧑‍💼：'), '')):
+        # TODO: 这里每轮都重新随机设置 seed，会让“可复现”和“随机性”
+        # 混在一起。你可以自己明确选择一种策略，例如：
+        # TODO: 示例改法 1（固定复现）
+        # setup_seed(GCTX.common_config.seed)
+        # TODO: 示例改法 2（同一轮次可复现）
+        # setup_seed(GCTX.common_config.seed + idx)
         setup_seed(random.randint(0, 1000))
+        # TODO: 这里打印的是用户 prompt，但前缀写成了“🤖”。
+        # 你可以自己改成：
+        # TODO: 示例改法
+        # if test_mode == 0:
+        #     print(f'🧑‍💼：{prompt}')
         if test_mode == 0: print(f'🤖：{prompt}')
 
         messages = messages[-GCTX.eval_config.max_history_len:]
@@ -63,11 +80,27 @@ def main():
                                                    add_generation_prompt=True
                                                   )'''
         new_prompt = tokenizer.bos_token + prompt
+        # TODO: 这里虽然维护了 `messages`，但真正送进模型的只有 `bos_token + prompt`，
+        # 多轮历史实际上没有参与推理。
+        # 你可以自己把上面的 `apply_chat_template` 接回来，例如：
+        # TODO: 示例改法
+        # new_prompt = tokenizer.apply_chat_template(
+        #     messages,
+        #     tokenize=False,
+        #     add_generation_prompt=True,
+        # )
         inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True).to(GCTX.common_config.device)
 
         print('🤖: ', end='')
         generated_ids = model.generate(
             inputs["input_ids"],
+            # TODO: 当前配置里 `max_new_tokens=8192`，但模型配置的
+            # `max_position_embeddings=512`。如果总长度超过位置编码上限，
+            # 推理会出现越界或形状不匹配风险。
+            # 你可以自己先做一个保护，例如：
+            # TODO: 示例改法
+            # max_context_left = lm_config.max_position_embeddings - inputs["input_ids"].shape[1]
+            # max_new_tokens = min(GCTX.eval_config.max_new_tokens, max_context_left)
             max_new_tokens=GCTX.eval_config.max_new_tokens,
             num_return_sequences=1,
             do_sample=True,

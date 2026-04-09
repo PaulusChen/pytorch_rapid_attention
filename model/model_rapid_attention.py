@@ -1,3 +1,11 @@
+"""模型主体定义。
+
+阅读这个文件时，建议你按下面顺序理解：
+1. `RapidAttentionForCausalLM.forward`：看 next-token loss 怎么构造。
+2. `RapidAttentionModel.forward`：看 token embedding 如何通过多层 block。
+3. `RapidAttention.forward`：重点看 Q/K/V 形状变化、RoPE 与 KV cache。
+"""
+
 import torch
 from transformers import PretrainedConfig
 from contextlib import nullcontext
@@ -14,6 +22,16 @@ class RapidAttentionLMConfig(PretrainedConfig):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        # 这里直接从全局配置 GCTX 取值，方便当前项目快速实验。
+        # TODO: 当前写法会覆盖 kwargs 里的同名字段，不利于兼容
+        # HuggingFace 常见的 `from_pretrained()` / `save_pretrained()` 流程。
+        # 你后续可以自己尝试改成“kwargs 优先，GCTX 只提供默认值”，例如：
+        # TODO: 示例改法
+        # defaults = {"dropout": GCTX.model_config.dropout, ...}
+        # defaults.update(kwargs)
+        # super().__init__(**defaults)
+        # for k, v in defaults.items():
+        #     setattr(self, k, v)
         self.dropout = GCTX.model_config.dropout
         self.vocab_size = GCTX.tokenizer_config.vocab_size
         self.common_eps = GCTX.common_config.common_eps
@@ -38,10 +56,17 @@ class RapidAttentionLMConfig(PretrainedConfig):
 class RapidAttentionLMTrainerContext:
     def __init__(self):
         self.lm_config = RapidAttentionLMConfig()
+        # 在训练循环中统一使用 `with trainer_ctx.ctx:`，
+        # 这样 CPU 与 CUDA 路径可以共用一套写法。
         self.ctx = (nullcontext() if GCTX.common_config.device_type == "cpu" else torch.amp.autocast("cuda"))
         self.device = GCTX.common_config.device if torch.cuda.is_available() else "cpu"
         base_seed = GCTX.common_config.seed
         torch.manual_seed(base_seed)
+        # TODO: 如果你后续要严谨支持纯 CPU 环境，最好把这句放到
+        # `if torch.cuda.is_available():` 判断里，例如：
+        # TODO: 示例改法
+        # if torch.cuda.is_available():
+        #     torch.cuda.manual_seed(base_seed)
         torch.cuda.manual_seed(base_seed)
         if GCTX.train_config.use_wandb:
             import wandb
@@ -79,6 +104,8 @@ class RMSNorm(nn.Module):
 
 
 def precompute_fregs_cis(dim: int, end: int = int(32*1024), theta: float = 1e6):
+    # 预计算 RoPE 所需的 cos / sin 表。
+    # 返回形状可以理解为 [最大位置数, head_dim]。
     fregs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=fregs.device)
     fregs = torch.outer(t, fregs)
@@ -89,6 +116,7 @@ def precompute_fregs_cis(dim: int, end: int = int(32*1024), theta: float = 1e6):
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     def rotate_helf(x):
+        # RoPE 的核心操作之一：把最后一维拆成两半并做旋转。
         x1 = x[..., : x.shape[-1] // 2]
         x2 = x[..., x.shape[-1] // 2 :]
         return torch.cat([-x2, x1], dim=-1)
@@ -133,8 +161,12 @@ class RapidAttention(nn.Module):
                 past_key_values: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
                 use_cache: bool = False,
                 attention_mask: Optional[torch.Tensor] = None):
+        # 输入 x 形状: [batch_size, seq_len, hidden_size]
         batch_size, seq_len, _ = x.shape
         xq, xk, xv = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+        # 投影后再 reshape 成多头形式：
+        # q: [B, T, num_q_heads, head_dim]
+        # k/v: [B, T, num_kv_heads, head_dim]
         xq = xq.view(batch_size, seq_len, self.n_local_heads, self.head_dim)
         xk = xk.view(batch_size, seq_len, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(batch_size, seq_len, self.n_local_kv_heads, self.head_dim)
@@ -142,6 +174,8 @@ class RapidAttention(nn.Module):
         xq, xk = apply_rotary_pos_emb(xq, xk, cos[:seq_len], sin[:seq_len])
 
         if past_key_values is not None:
+            # 增量解码阶段会把历史 token 的 K/V 与当前步拼接，
+            # 从而避免重复计算整段前缀。
             xk = torch.cat([past_key_values[0], xk], dim=1)
             xv = torch.cat([past_key_values[1], xv], dim=1)
         past_kv = (xk, xv) if use_cache else None
@@ -152,6 +186,13 @@ class RapidAttention(nn.Module):
         )
 
         if self.flash and seq_len != 1:
+            # 注意：这里调用的是 PyTorch 自带的 SDPA。
+            # TODO: 你这个项目的学习目标之一是“把自己的 flash attention 算子接进模型”，
+            # 但当前这条路径并没有使用 `rapid_attention/ops.py` 中的自定义算子接口。
+            # 你后续可以自己尝试把这里替换成自定义算子调用，例如：
+            # TODO: 示例改法
+            # if self.flash and seq_len != 1:
+            #     output = rapid_attention_flash_attention(xq, xk, xv, attention_mask)
             dropout_p = self.dropout if self.training else 0.0
             attn_mask = None
             if attention_mask is not None:
@@ -159,7 +200,19 @@ class RapidAttention(nn.Module):
                 attn_mask = attn_mask.bool() if attention_mask is not None else None
             output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=True)
         else:
+            # 这是手写 attention 路径，更适合你学习时逐步打印中间张量。
             scores = (xq @ xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            # TODO: 这里的 causal mask 只按 `seq_len x seq_len` 构造。
+            # 在训练阶段（通常没有 cache）问题不大，但如果以后你想严格支持
+            # “带 cache 且一次输入多个 token”的情况，需要重新检查。
+            # 你可以自己尝试改成基于 key 总长度构造掩码，例如：
+            # TODO: 示例改法
+            # key_len = xk.size(-2)
+            # start_pos = 0 if past_key_values is None else past_key_values[0].shape[1]
+            # q_pos = torch.arange(start_pos, start_pos + seq_len, device=scores.device).unsqueeze(-1)
+            # k_pos = torch.arange(key_len, device=scores.device).unsqueeze(0)
+            # causal_mask = k_pos > q_pos
+            # scores = scores.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float("-inf"))
             scores = scores + torch.triu(
                 torch.full((seq_len, seq_len), float("-inf"), device=scores.device), diagonal=1
             ).unsqueeze(0).unsqueeze(0)
@@ -189,6 +242,7 @@ class FeedForward(nn.Module):
 
 
     def forward(self, x):
+        # 这是一个门控前馈网络，可以把它理解成 SwiGLU 风格的 MLP。
         return self.dropout(self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x)))
 
 
@@ -205,6 +259,8 @@ class RapidBlock(nn.Module):
         self.mlp = FeedForward(config)
 
     def forward(self, hidden_states, position_embeddings, past_key_value=None, use_cache=False, attention_mask=None):
+        # 一个标准 block 的结构：
+        # Norm -> Self-Attention -> 残差 -> Norm -> MLP -> 残差
         residual = hidden_states
         hidden_states, present_key_value = self.self_attention(
             self.input_layer_norm(hidden_states), position_embeddings,
@@ -225,6 +281,10 @@ class RapidAttentionModel(nn.Module):
         self.layers = nn.ModuleList([
             RapidBlock(layer_id, config) for layer_id in range(config.num_hidden_layers)
         ])
+        # TODO: 前面的 block 使用 RMSNorm，这里最后却用了 LayerNorm。
+        # 这不一定是“错误”，但架构风格并不统一。你可以自己思考是否要统一成 RMSNorm。
+        # TODO: 示例改法
+        # self.norm = RMSNorm(config.hidden_size, eps=config.common_eps)
         self.norm = nn.LayerNorm(config.hidden_size)
         freqs_cos, fregs_sin = precompute_fregs_cis(dim=config.hidden_size // config.num_attention_heads,
                                                     end=config.max_position_embeddings, theta=config.rope_theta)
@@ -239,6 +299,8 @@ class RapidAttentionModel(nn.Module):
         if hasattr(past_key_values, "layers"): past_key_values = None
         past_key_values = past_key_values or [None] * len(self.layers)
 
+        # `start_pos` 表示当前片段在整段序列中的起始位置。
+        # 训练时通常是 0，增量解码时等于历史 KV cache 的长度。
         start_pos = past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0
 
         hidden_states = self.dropout(self.embed_tokens(input_ids))
@@ -258,6 +320,9 @@ class RapidAttentionModel(nn.Module):
             )
             presents.append(present)
         hidden_states = self.norm(hidden_states)
+        # TODO: 配置里有 `use_moe`，但当前文件没有真正实现 MOE 分支，
+        # 所以 aux_loss 恒为 0。也就是说“配置项”和“实际模型能力”还没有对齐。
+        # 你后续如果要继续扩展，可以自己把 MOE 的实现补进来。
         aux_loss = 0# sum(layer.mlp.aux_loss for layer in self.layers if isinstance(layer.mlp, MOEFeedForward))
 
         return hidden_states, presents, aux_loss
@@ -293,6 +358,8 @@ class RapidAttentionForCausalLM(PreTrainedModel, GenerationMixin):
 
         loss = None
         if labels is not None:
+            # 标准 next-token prediction：
+            # 第 t 个位置的 logits 去预测第 t+1 个 token。
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             loss = nn.functional.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=-100)

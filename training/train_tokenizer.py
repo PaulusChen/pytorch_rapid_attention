@@ -13,7 +13,13 @@ def tokenizer_texts_iter(data_path):
     train_lines = 0
     with open(data_path, "r", encoding="utf-8") as f:
         for line in f:
-            # 只采样10%的数据进行分词器训练
+            # 只采样 10% 数据可以明显加快试验速度，
+            # 但也会降低 tokenizer 对长尾词和罕见字符的覆盖能力。
+            # TODO: 当你开始认真比较模型效果时，可以自己把采样比例调高，例如：
+            # TODO: 示例改法
+            # sample_ratio = 0.5
+            # if random.random() > sample_ratio:
+            #     continue
             if random.random() > 0.1:
                 continue
             train_lines += 1
@@ -32,6 +38,8 @@ def tokenizer_texts_iter(data_path):
 def train_tokenizer(data_path, tokenizer_dir, vocab_size):
     print(f"训练分词器... 词汇表大小: {vocab_size}")
     tokenizer = Tokenizer(models.BPE())
+    # ByteLevel BPE 对任意字节序列都有定义，
+    # 对中英文混合文本、符号和未知字符通常更稳健。
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
     trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
@@ -48,6 +56,8 @@ def train_tokenizer(data_path, tokenizer_dir, vocab_size):
     texts_iter = tokenizer_texts_iter(data_path)
     tokenizer.train_from_iterator(texts_iter, trainer=trainer)
     tokenizer.decoder = decoders.ByteLevel()
+    # 这里断言特殊 token 的 id，是为了让 tokenizer 产物和后续模型配置中的
+    # bos/eos/pad id 保持严格一致。
     assert tokenizer.token_to_id("<|endoftext|>") == 0, "确保<|endoftext|>的ID为0"
     assert tokenizer.token_to_id("<|im_start|>") == 1, "确保<|im_start|>的ID为1"
     assert tokenizer.token_to_id("<|im_end|>") == 2, "确保<|im_end|>的ID为2"
@@ -95,7 +105,13 @@ def train_tokenizer(data_path, tokenizer_dir, vocab_size):
         "spaces_between_special_tokens": False,
         "tokenizer_class": "PreTrainedTokenizerFast",
         "unk_token": "<|endoftext|>",
-        "chat_template": "{%- if tools %}\n    {{- '<|im_start|>system\\n' }}\n    {%- if messages[0].role == 'system' %}\n        {{- messages[0].content + '\\n\\n' }}\n    {%- endif %}\n    {{- \"# Tools\\n\\nYou may call one or more functions to assist with the user query.\\n\\nYou are provided with function signatures within <tools></tools> XML tags:\\n<tools>\" }}\n    {%- for tool in tools %}\n        {{- \"\\n\" }}\n        {{- tool | tojson }}\n    {%- endfor %}\n    {{- \"\\n</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\\\"name\\\": <function-name>, \\\"arguments\\\": <args-json-object>}\\n</tool_call><|im_end|>\\n\" }}\n{%- else %}\n {%- if messages[0]['role'] == 'system' -%}\n        {{- '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}\n    {%- else -%}\n        {{- '<|im_start|>system\\nYou are a helpful assistant<|im_end|>\\n' }}\n {%- endif %}\n{%- endif %}\n{%- set ns = namespace(multi_step_tool=true, last_query_index=messages|length - 1) %}\n{%- for message in messages[::-1] %}\n    {%- set index = (messages|length - 1) - loop.index0 %}\n    {%- if ns.multi_step_tool and message.role == \"user\" and message.content is string and not(message.content.startswith('<tool_response>') and message.content.endswith('</tool_response>')) %}\n        {%- set ns.multi_step_tool = false %}\n        {%- set ns.last_query_index = index %}\n    {%- endif %}\n{%- endfor %}\n{%- for message in messages %}\n    {%- if message.content is string %}\n        {%- set content = message.content %}\n    {%- else %}\n        {%- set content = '' %}\n    {%- endif %}\n    {%- if (message.role == \"user\") or (message.role == \"system\" and not loop.first) %}\n        {{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}\n    {%- elif message.role == \"assistant\" %}\n   {{- '<|im_start|>' + message.role + '\\n' + content }}\n  {%- if message.tool_calls %}\n            {%- for tool_call in message.tool_calls %}\n                {%- if (loop.first and content) or (not loop.first) %}\n                    {{- '\\n' }}\n                {%- endif %}\n                {%- if tool_call.function %}\n                    {%- set tool_call = tool_call.function %}\n                {%- endif %}\n                {{- '<tool_call>\\n{\"name\": \"' }}\n                {{- tool_call.name }}\n                {{- '\", \"arguments\": ' }}\n                {%- if tool_call.arguments is string %}\n                    {{- tool_call.arguments }}\n                {%- else %}\n                    {{- tool_call.arguments | tojson }}\n                {%- endif %}\n                {{- '}\\n</tool_call>' }}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}\n        {%- if loop.first or (messages[loop.index0 - 1].role != \"tool\") %}\n            {{- '<|im_start|>user' }}\n        {%- endif %}\n        {{- '\\n<tool_response>\\n' }}\n        {{- content }}\n        {{- '\\n</tool_response>' }}\n        {%- if loop.last or (messages[loop.index0 + 1].role != \"tool\") %}\n            {{- '<|im_end|>\\n' }}\n        {%- endif %}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|im_start|>assistant\\n' }}\n    {%- if enable_thinking is defined and enable_thinking is false %}\n        {{- '<think>\\n\\n</think>\\n\\n' }}\n    {%- endif %}\n{%- endif %}",
+        # TODO: 这个 chat_template 只有在推理代码里显式调用
+        # `tokenizer.apply_chat_template(...)` 时才会真正生效。
+        # 如果推理脚本只是简单地拼 `bos_token + prompt`，那么这里的模板
+        # 和多轮对话格式实际上不会参与模型输入。
+        # https://huggingface.co/docs/transformers/v5.3.0/en/internal/tokenization_utils#transformers.PreTrainedTokenizerBase
+        # https://huggingface.co/docs/transformers/v5.4.0/zh/chat_templating
+        "chat_template": "{% if messages[0]['role'] == 'system' %}{% set system_message = messages[0]['content'] %}{{ '<|im_start|>system\\n' + system_message + '<|im_end|>\\n' }}{% else %}{{ '<|im_start|>system\\nYou are a helpful assistant<|im_end|>\\n' }}{% endif %}{% for message in messages %}{% set content = message['content'] %}{% if message['role'] == 'user' %}{{ '<|im_start|>user\\n' + content + '<|im_end|>\\n<|im_start|>assistant\\n' }}{% elif message['role'] == 'assistant' %}{{ content + '<|im_end|>' + '\\n' }}{% endif %}{% endfor %}"
     }
     with open(
         os.path.join(tokenizer_dir, "tokenizer_config.json"), "w", encoding="utf-8"
