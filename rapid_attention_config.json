@@ -8,7 +8,7 @@
     },
     "tokenizer_config": {
         "vocab_size": 12800,
-        "tokenizer_train_data_relative_path": "deepctrl/deepctrl-sft-data/sft_data_zh_clean.jsonl",
+        "tokenizer_train_data_relative_path": "deepctrl/deepctrl-sft-data/pretrain_data_zh_clean.jsonl",
         "tokenizer_relative_dir": "tokenizer",
         "bos_token_id": 1,
         "eos_token_id": 2
@@ -28,7 +28,8 @@
         "hidden_act": "silu"
     },
     "train_config": {
-        "train_data_relative_path": "deepctrl/deepctrl-sft-data/sft_data_zh_clean.jsonl",
+        "pre_train_data_relative_path": "deepctrl/deepctrl-sft-data/pretrain_data_zh_clean.jsonl",
+        "sft_train_data_relative_path": "deepctrl/deepctrl-sft-data/sft_data_zh_clean.jsonl",
         "epochs": 1,
         "use_wandb": true,
         "wandb_project": "paulchen-testing",

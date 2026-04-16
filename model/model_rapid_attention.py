@@ -20,54 +20,50 @@ from rapid_attention.utils.global_context import (
 class RapidAttentionLMConfig(PretrainedConfig):
     model_type = "rapid_attention"
 
-    def __init__(self, **kwargs):
+    def __init__(self, stage: str = "pretrain", **kwargs):
         super().__init__(**kwargs)
         # 这里直接从全局配置 GCTX 取值，方便当前项目快速实验。
-        # TODO: 当前写法会覆盖 kwargs 里的同名字段，不利于兼容
         # HuggingFace 常见的 `from_pretrained()` / `save_pretrained()` 流程。
-        # 你后续可以自己尝试改成“kwargs 优先，GCTX 只提供默认值”，例如：
-        # TODO: 示例改法
-        # defaults = {"dropout": GCTX.model_config.dropout, ...}
-        # defaults.update(kwargs)
-        # super().__init__(**defaults)
-        # for k, v in defaults.items():
-        #     setattr(self, k, v)
-        self.dropout = GCTX.model_config.dropout
-        self.vocab_size = GCTX.tokenizer_config.vocab_size
-        self.common_eps = GCTX.common_config.common_eps
-        self.hidden_size = GCTX.model_config.hidden_size
-        self.num_hidden_layers = GCTX.model_config.num_hidden_layers
-        self.use_moe = GCTX.model_config.use_moe
-        self.epochs = GCTX.train_config.epochs
-        self.wandb_run_name = f"rapid_attention_pretrain-Epoch-{self.epochs}-BatchSize-{GCTX.train_config.batch_size}-LearningRate-{GCTX.train_config.learning_rate}"
-        self.max_seq_len = GCTX.model_config.max_seq_len
-        self.num_attention_heads = GCTX.model_config.num_attention_heads
-        self.num_key_value_heads = GCTX.model_config.num_key_value_heads
-        self.bos_token_id = GCTX.tokenizer_config.bos_token_id
-        self.eos_token_id = GCTX.tokenizer_config.eos_token_id
-        self.use_flash_attention = GCTX.model_config.use_flash_attention
-        self.max_position_embeddings = GCTX.model_config.max_position_embeddings
-        self.rope_theta = GCTX.model_config.rope_theta
-        self.intermediate_size = GCTX.model_config.intermediate_size
-        self.hidden_act = GCTX.model_config.hidden_act
+        # kwargs 优先，GCTX 只提供默认值
+        defaults = {
+            "dropout": GCTX.model_config.dropout,
+            "vocab_size": GCTX.tokenizer_config.vocab_size,
+            "common_eps": GCTX.common_config.common_eps,
+            "hidden_size": GCTX.model_config.hidden_size,
+            "num_hidden_layers": GCTX.model_config.num_hidden_layers,
+            "use_moe": GCTX.model_config.use_moe,
+            "epochs": GCTX.train_config.epochs,
+            "wandb_run_name": f"rapid_attention_{stage}-Epoch-{GCTX.train_config.epochs}-BatchSize-{GCTX.train_config.batch_size}-LearningRate-{GCTX.train_config.learning_rate}",
+            "max_seq_len": GCTX.model_config.max_seq_len,
+            "num_attention_heads": GCTX.model_config.num_attention_heads,
+            "num_key_value_heads": GCTX.model_config.num_key_value_heads,
+            "bos_token_id": GCTX.tokenizer_config.bos_token_id,
+            "eos_token_id": GCTX.tokenizer_config.eos_token_id,
+            "use_flash_attention": GCTX.model_config.use_flash_attention,
+            "max_position_embeddings": GCTX.model_config.max_position_embeddings,
+            "rope_theta": GCTX.model_config.rope_theta,
+            "intermediate_size": GCTX.model_config.intermediate_size,
+            "hidden_act": GCTX.model_config.hidden_act
+        }
+
+        defaults.update(kwargs)
+        super().__init__(**defaults)
+        for k, v in defaults.items():
+            setattr(self, k, v)
 
 
 
 class RapidAttentionLMTrainerContext:
-    def __init__(self):
-        self.lm_config = RapidAttentionLMConfig()
+    def __init__(self, stage):
+        self.lm_config = RapidAttentionLMConfig(stage=stage)
         # 在训练循环中统一使用 `with trainer_ctx.ctx:`，
         # 这样 CPU 与 CUDA 路径可以共用一套写法。
         self.ctx = (nullcontext() if GCTX.common_config.device_type == "cpu" else torch.amp.autocast("cuda"))
         self.device = GCTX.common_config.device if torch.cuda.is_available() else "cpu"
         base_seed = GCTX.common_config.seed
         torch.manual_seed(base_seed)
-        # TODO: 如果你后续要严谨支持纯 CPU 环境，最好把这句放到
-        # `if torch.cuda.is_available():` 判断里，例如：
-        # TODO: 示例改法
-        # if torch.cuda.is_available():
-        #     torch.cuda.manual_seed(base_seed)
-        torch.cuda.manual_seed(base_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(base_seed)
         if GCTX.train_config.use_wandb:
             import wandb
             wandb.init(
@@ -246,6 +242,9 @@ class FeedForward(nn.Module):
         return self.dropout(self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x)))
 
 
+class MOEFeedForward(nn.Module):
+    pass
+
 class RapidBlock(nn.Module):
     def __init__(self, layer_id, config):
         super().__init__()
@@ -281,11 +280,7 @@ class RapidAttentionModel(nn.Module):
         self.layers = nn.ModuleList([
             RapidBlock(layer_id, config) for layer_id in range(config.num_hidden_layers)
         ])
-        # TODO: 前面的 block 使用 RMSNorm，这里最后却用了 LayerNorm。
-        # 这不一定是“错误”，但架构风格并不统一。你可以自己思考是否要统一成 RMSNorm。
-        # TODO: 示例改法
-        # self.norm = RMSNorm(config.hidden_size, eps=config.common_eps)
-        self.norm = nn.LayerNorm(config.hidden_size)
+        self.norm = RMSNorm(config.hidden_size, eps=config.common_eps)
         freqs_cos, fregs_sin = precompute_fregs_cis(dim=config.hidden_size // config.num_attention_heads,
                                                     end=config.max_position_embeddings, theta=config.rope_theta)
         self.register_buffer("freqs_cos", freqs_cos, persistent=False)
@@ -320,10 +315,7 @@ class RapidAttentionModel(nn.Module):
             )
             presents.append(present)
         hidden_states = self.norm(hidden_states)
-        # TODO: 配置里有 `use_moe`，但当前文件没有真正实现 MOE 分支，
-        # 所以 aux_loss 恒为 0。也就是说“配置项”和“实际模型能力”还没有对齐。
-        # 你后续如果要继续扩展，可以自己把 MOE 的实现补进来。
-        aux_loss = 0# sum(layer.mlp.aux_loss for layer in self.layers if isinstance(layer.mlp, MOEFeedForward))
+        aux_loss = sum([layer.mlp.aux_loss for layer in self.layers if isinstance(layer.mlp, MOEFeedForward)], hidden_states.new_zeros(1).squeeze())
 
         return hidden_states, presents, aux_loss
 
@@ -355,14 +347,10 @@ class RapidAttentionForCausalLM(PreTrainedModel, GenerationMixin):
         )
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
-
         loss = None
         if labels is not None:
-            # 标准 next-token prediction：
-            # 第 t 个位置的 logits 去预测第 t+1 个 token。
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            loss = nn.functional.cross_entropy(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1), ignore_index=-100)
+            x, y = logits[..., :-1, :].contiguous(), labels[..., 1:].contiguous()
+            loss = torch.nn.functional.cross_entropy(x.view(-1, x.size(-1)), y.view(-1), ignore_index=-100)
         output = CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_kvs, hidden_states=hidden_states)
-        output.aux_loss =aux_loss
+        output.aux_loss = aux_loss
         return output

@@ -11,7 +11,40 @@ def fetch_raw_jsonl_lines(dataset_path):
         for line in f:
             yield line
 
-def clean_deepctrl_dataset(dataset_dir):
+def clean_deepctrl_dataset_for_pretrain(dataset_dir):
+    """数据集包含字段:
+        1.id，用于追踪数据的唯一标识符。
+        2.instruction，系统提示词。
+        3.input，用户输入指令
+        4.output，输出
+        5.history，历史对话
+        6.language，语言
+        7.data_source，数据来源
+        8.input_len，用户平均单轮输入长度
+        9.output_len，平均输出长度
+        10.num_utter，对话轮次
+        11.type，数据类别
+        12.type_keyword，该类别数据的关键词
+    """
+    raw_dataset_path = project_root / "datasets" / "deepctrl" / "deepctrl-sft-data" / "sft_data_zh.jsonl"
+    cleaned_dataset_path = project_root / "datasets" / "deepctrl" / "deepctrl-sft-data" / "pretrain_data_zh_clean.jsonl"
+
+    print(f"清理数据集 {raw_dataset_path}，保存到: {cleaned_dataset_path}")
+    with open(cleaned_dataset_path, "w", encoding="utf-8") as out_f:
+        for line in fetch_raw_jsonl_lines(raw_dataset_path):
+            item = json.loads(line)
+            text = f"{item.get("input", "").strip()} {item.get("output", "").strip()}"
+            history = item.get("history")
+            for history_item in history:
+                if history_item and len(history_item) == 2:
+                    text += f" {history_item[0].strip()} {history_item[1].strip()}"
+            if text:
+                cleaned_item = {"text": text}
+                out_f.write(json.dumps(cleaned_item, ensure_ascii=False) + "\n")
+    print("数据集清理完成。")
+
+
+def clean_deepctrl_dataset_for_sft(dataset_dir):
     """数据集包含字段:
         1.id，用于追踪数据的唯一标识符。
         2.instruction，系统提示词。
@@ -43,7 +76,6 @@ def clean_deepctrl_dataset(dataset_dir):
     print("数据集清理完成。")
 
 
-
-
 if __name__ == "__main__":
-    clean_deepctrl_dataset(datasets_dir)
+    clean_deepctrl_dataset_for_pretrain(datasets_dir)
+    clean_deepctrl_dataset_for_sft(datasets_dir)
