@@ -89,7 +89,7 @@ def main():
     # 从 ckpt 恢复训练状态（如果有的话）。
     start_epoch = 0
     start_step = 0
-    checkpoint = GCTX.train_config.checkpoint_pth
+    checkpoint = GCTX.train_config.pretrain_checkpoint_pth
     if checkpoint.exists():
         state_dict = torch.load(checkpoint, map_location="cpu")
         model.load_state_dict(state_dict["model"])
@@ -153,7 +153,7 @@ def main():
                     )
             if step % GCTX.train_config.save_interval == 0 or step == iter_per_epoch:
                 model.eval()
-                checkpoint_pth = GCTX.train_config.checkpoint_pth
+                checkpoint_pth = GCTX.train_config.pretrain_checkpoint_pth
                 if not os.path.exists(checkpoint_pth.parent):
                     os.makedirs(checkpoint_pth.parent, exist_ok=True)
                 state_dict = model.state_dict()
