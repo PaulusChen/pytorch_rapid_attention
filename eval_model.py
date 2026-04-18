@@ -36,7 +36,7 @@ def main():
     model = RapidAttentionForCausalLM(lm_config)
     use_model_type = "pretrain"
 
-    checkpoint = GCTX.train_config.checkpoint_pth
+    checkpoint = GCTX.train_config.pretrain_checkpoint_pth
     if checkpoint.exists():
         state_dict = torch.load(checkpoint, map_location="cpu")
         model.load_state_dict(state_dict["model"])

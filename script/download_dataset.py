@@ -67,6 +67,7 @@ def download_stepfun_sft_dataset(datasets_dir: Path):
         # https://github.com/modelscope/modelscope/blob/master/modelscope/hub/snapshot_download.py#L155
         download_path = MSDownload.dataset_snapshot_download(
             dataset_id=dataset_name,
+            allow_file_pattern="json/general/*",  # 只下载 json/general 目录下的文件
             local_dir=save_dir,
         )
 
