@@ -108,7 +108,7 @@ reasoning_content：在某些示例中出现的、助理端可选字段
     raw_dataset_path = project_root / "datasets" / "stepfun-ai" / "Step-3.5-Flash-SFT" / "json" / "general"
     cleaned_dataset_path = project_root / "datasets" / "stepfun-ai" / "Step-3.5-Flash-SFT" / "pretrain_data_clean.jsonl"
     # 使用正则表达式选择符合条件的文件，部分读取样本数据 chunk_0.json ~ chunk_20.json 读取前 20 个分片文件
-    for json_file in [raw_dataset_path / f"chunk_{i}.json" for i in range(20)]:
+    for json_file in [raw_dataset_path / f"chunk_{i}.json" for i in range(60)]:
         with open(json_file, "r", encoding="utf-8") as f:
             coversations = json.load(f)
             with open(cleaned_dataset_path, "a", encoding="utf-8") as out_f:
@@ -128,7 +128,7 @@ def clean_stepfun_ai_dataset_for_sft_train():
     raw_dataset_path = project_root / "datasets" / "stepfun-ai" / "Step-3.5-Flash-SFT" / "json" / "general"
     cleaned_dataset_path = project_root / "datasets" / "stepfun-ai" / "Step-3.5-Flash-SFT" / "sft_data_clean.jsonl"
     # 使用正则表达式选择符合条件的文件，部分读取样本数据 chunk_0.json ~ chunk_20.json 读取前 20 个分片文件
-    for json_file in [raw_dataset_path / f"chunk_{i}.json" for i in range(20)]:
+    for json_file in [raw_dataset_path / f"chunk_{i}.json" for i in range(60)]:
         with open(json_file, "r", encoding="utf-8") as f:
             coversations = json.load(f)
             # 把普通的json文件转换成jsonl格式，每行一个json对象，方便后续处理
@@ -139,5 +139,5 @@ def clean_stepfun_ai_dataset_for_sft_train():
 if __name__ == "__main__":
     # clean_deepctrl_dataset_for_pretrain()
     # clean_deepctrl_dataset_for_sft()
-    # clean_stepfun_ai_dataset_for_pretrain()
+    clean_stepfun_ai_dataset_for_pretrain()
     clean_stepfun_ai_dataset_for_sft_train()

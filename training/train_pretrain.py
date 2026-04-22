@@ -3,17 +3,12 @@ import torch
 import time
 import json
 import math
-from rapid_attention import logger
+from rapid_attention import (logger, get_lr)
 from rapid_attention.utils.global_context import (
     rapid_attention_global_context as GCTX,
 )
 from model.model_rapid_attention import RapidAttentionLMTrainerContext
 from model.model_rapid_attention import RapidAttentionForCausalLM
-
-
-def get_lr(current_step, total_steps, lr):
-    # 这是一个余弦退火风格的学习率调度。
-    return lr / 10 + 0.5 * lr * (1 + math.cos(math.pi * current_step / total_steps))
 
 
 class PretrainDataset(torch.utils.data.Dataset):
@@ -116,7 +111,7 @@ def main():
 
             with trainer_ctx.ctx:
                 res = model(input_ids, labels=labels)
-                loss = res.loss + res.aux_loss
+                loss = res.loss
                 loss = loss / GCTX.train_config.accumulation_steps
 
             scaler.scale(loss).backward()

@@ -42,7 +42,7 @@ class RapidAttentionLMConfig(PretrainedConfig):
             "use_flash_attention": GCTX.model_config.use_flash_attention,
             "max_position_embeddings": GCTX.model_config.max_position_embeddings,
             "rope_theta": GCTX.model_config.rope_theta,
-            "intermediate_size": GCTX.model_config.intermediate_size,
+            "intermediate_size": GCTX.model_config.intermediate_size if GCTX.model_config.intermediate_size is not None else math.ceil(GCTX.model_config.hidden_size * math.pi / 64) * 64,
             "hidden_act": GCTX.model_config.hidden_act
         }
 
@@ -84,7 +84,6 @@ import torch.nn as nn
 from transformers.activations import ACT2FN
 from transformers import PreTrainedModel, GenerationMixin
 from transformers.modeling_outputs import CausalLMOutputWithPast
-
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-5):
@@ -228,8 +227,7 @@ class FeedForward(nn.Module):
     def __init__(self, config):
         super().__init__()
         if config.intermediate_size is None:
-            intermediate_size = int(config.hidden_size * 8 /3)
-            config.intermediate_size = 64 * ((intermediate_size + 64 - 1) // 64)
+            config.intermediate_size = math.ceil(config.hidden_size * math.pi / 64) * 64
         self.gate_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
         self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
         self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
@@ -316,7 +314,6 @@ class RapidAttentionModel(nn.Module):
             presents.append(present)
         hidden_states = self.norm(hidden_states)
         aux_loss = sum([layer.mlp.aux_loss for layer in self.layers if isinstance(layer.mlp, MOEFeedForward)], hidden_states.new_zeros(1).squeeze())
-
         return hidden_states, presents, aux_loss
 
 
@@ -351,6 +348,18 @@ class RapidAttentionForCausalLM(PreTrainedModel, GenerationMixin):
         if labels is not None:
             x, y = logits[..., :-1, :].contiguous(), labels[..., 1:].contiguous()
             loss = torch.nn.functional.cross_entropy(x.view(-1, x.size(-1)), y.view(-1), ignore_index=-100)
-        output = CausalLMOutputWithPast(loss=loss, logits=logits, past_key_values=past_kvs, hidden_states=hidden_states)
-        output.aux_loss = aux_loss
+
+        total_loss = None
+        if loss is not None:
+            total_loss = loss
+            if aux_loss is not None:
+                total_loss = total_loss + aux_loss
+        output = CausalLMOutputWithPast(
+            loss=total_loss,
+            logits=logits,
+            past_key_values=past_kvs,
+            hidden_states=hidden_states
+        )
+        output.aux_loss = aux_loss  # 单独存 aux 用于日志
+        output.logits_loss = loss   # 可选：额外存原始loss，方便wandb
         return output

@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 from pathlib import Path
 
@@ -25,4 +26,9 @@ def find_project_root(marker_file=".rapid_attention_project_root"):
         f"未找到项目根目录标识文件 '{marker_file}'！\n"
         f"请在项目根目录执行：touch {marker_file}"
     )
+
+
+def get_lr(current_step, total_steps, lr):
+    return lr*(0.1 + 0.45*(1 + math.cos(math.pi * current_step / total_steps)))
+
 

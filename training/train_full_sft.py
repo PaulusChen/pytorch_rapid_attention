@@ -1,22 +1,29 @@
-from pandas.io import json
+import os
 import torch
-
 import time
-from rapid_attention import logger
+import random
+from rapid_attention import logger, get_lr
 from rapid_attention.utils.global_context import (
     rapid_attention_global_context as GCTX,
 )
 from model.model_rapid_attention import RapidAttentionLMTrainerContext
 from model.model_rapid_attention import RapidAttentionForCausalLM
 from torch.utils.data import Dataset
-from datasets import load_dataset, Features, Value
+from datasets import load_dataset, Features, Value, Json
 
+
+def post_processing_chat(prompt_content, empty_think_ratio=0.2):
+    # 以80%概率移除空思考标签
+    if '<think>\n\n</think>\n\n' in prompt_content and random.random() > empty_think_ratio:
+        prompt_content = prompt_content.replace('<think>\n\n</think>\n\n', '')
+    return prompt_content
 
 class SFTDataset(Dataset):
-    def __init__(self, jsonl_path, tokenizer, max_length=1024):
+    def __init__(self, jsonl_path, tokenizer, max_len=1024):
         super().__init__()
         self.tokenizer = tokenizer
-        self.max_length = max_length
+        self.max_length = max_len
+        '''
         features = Features(
             {
                 "conversations": [
@@ -24,14 +31,16 @@ class SFTDataset(Dataset):
                         "role": Value("string"),
                         "content": Value("string"),
                         "reasoning_content": Value("string"),
-                        "tools": Value("string"),
-                        "tool_calls": Value("string"),
+                        "meta": Json(),
+                        "tools": Json(),
+                        "tool_calls": Json(),
                     }
                 ]
             }
         )
+        #'''
         self.samples = load_dataset(
-            "json", data_files=str(jsonl_path), features=features
+            "json", data_files=str(jsonl_path)
         )["train"]
         self.bos_id = tokenizer(
             f"{tokenizer.bos_token}assistant\n", add_special_tokens=False
@@ -83,19 +92,36 @@ class SFTDataset(Dataset):
                 i += 1
         return labels
 
+    def __getitem__(self, index):
+        sample = self.samples[index]
+        conversations = sample["conversations"]
+        prompt = self.create_chat_prompt(conversations)
+        prompt = post_processing_chat(prompt)
+        input_ids = self.tokenizer(prompt).input_ids[:self.max_length]
+        input_ids += [self.tokenizer.pad_token_id] * (self.max_length - len(input_ids))
+        labels = self.generate_labels(input_ids)
+        '''
+        # === 调试打印 ===
+        print(f"\n--- Sample {index} ---")
+        for i, (x, y) in enumerate(zip(input_ids[:-1], labels[1:])):
+            print(f"{i:3d}: X={self.tokenizer.decode([x])!r:16s} ---> Y={self.tokenizer.decode([input_ids[i+1]])!r:16s} label={y}")
+        # ================
+        # '''
+        return torch.tensor(input_ids, dtype=torch.long), torch.tensor(labels, dtype=torch.long)
+
 
 def main():
     # 初始化训练上下文，包括配置、日志和 tokenizer。
     trainer_ctx = RapidAttentionLMTrainerContext(stage="full_sft")
     # 设置混合精度
-    device_type = "cuda" if "cuda" in args.device else "cpu"
-    dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
+    device_type = "cuda" if "cuda" in trainer_ctx.device else "cpu"
+    dtype = torch.bfloat16
     autocast_ctx = (
-        nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
+        nullcontext() if device_type == "cpu" else torch.amp.autocast("cuda", dtype=dtype)
     )
 
     # 定义模型、优化器
-    model = RapidAttentionForCausalLM(trainer_ctx.lm_config)
+    model = RapidAttentionForCausalLM(trainer_ctx.lm_config).to(trainer_ctx.device)
 
     # 构建训练数据集和数据加载器。
     train_ds = SFTDataset(
@@ -128,7 +154,7 @@ def main():
     if not checkpoint.exists():
         checkpoint = GCTX.train_config.pretrain_checkpoint_pth
     if checkpoint.exists():
-        ckp_data = torch.load(checkpoint, map_location=trainer_ctx.device)
+        ckp_data = torch.load(checkpoint, map_location="cpu")
         model.load_state_dict(ckp_data["model"])
         optimizer.load_state_dict(ckp_data["optimizer"])
         scaler.load_state_dict(ckp_data["scaler"])
@@ -138,8 +164,9 @@ def main():
     else:
         logger(f"未找到预训练模型，开始从头训练。")
 
-    model = torch.compile(model)
-    Logger("torch.compile 加速已启用")
+    model.to(trainer_ctx.device)
+    # model = torch.compile(model)
+    # logger("torch.compile 加速已启用")
     iter_per_epoch = len(train_loader)
     for epoch in range(start_epoch, GCTX.train_config.epochs):
         start_time = time.time()
@@ -156,9 +183,8 @@ def main():
             for param_group in optimizer.param_groups:
                 param_group["lr"] = lr
             with autocast_ctx:
-                res = model(input_ids, labels)
-                loss = res.loss + res.aux_loss
-                loss = loss / GCTX.train_config.accumulation_steps
+                res = model(input_ids, labels=labels)
+                loss = res.loss / GCTX.train_config.accumulation_steps
             scaler.scale(loss).backward()
             if step % GCTX.train_config.accumulation_steps == 0:
                 scaler.unscale_(optimizer)
@@ -198,19 +224,21 @@ def main():
                     )
             if step % GCTX.train_config.save_interval == 0 or step == iter_per_epoch:
                 model.eval()
-                ckp_pth = GCTX.train_config.sft_checkpoint_pth
-                tmp_ckp_pth = ckp_pth.with_suffix(".tmp")
-                state_dict = {
-                    "model": model.state_dict(),
+                checkpoint_pth = GCTX.train_config.sft_checkpoint_pth
+                if not os.path.exists(checkpoint_pth.parent):
+                    os.makedirs(checkpoint_pth.parent, exist_ok=True)
+                state_dict = model.state_dict()
+                state_dict = {k: v.cpu() for k, v in state_dict.items()}
+                resume_data = {
+                    "model": state_dict,
                     "optimizer": optimizer.state_dict(),
                     "scaler": scaler.state_dict(),
                     "epoch": epoch,
                     "step": step,
                 }
-                torch.save(
-                    {k: v.half().cpu() for k, v in state_dict.items()}, tmp_ckp_pth
-                )
-                tmp_ckp_pth.rename(ckp_pth)
+                checkpoint_tmp_path = checkpoint_pth.with_suffix(".tmp")
+                torch.save(resume_data, checkpoint_tmp_path)
+                os.replace(checkpoint_tmp_path, checkpoint_pth)
                 model.train()
                 del state_dict
             del input_ids, labels, res, loss
