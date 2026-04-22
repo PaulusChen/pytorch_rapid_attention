@@ -2,6 +2,7 @@ import os
 import torch
 import time
 import random
+import json
 from rapid_attention import logger, get_lr
 from rapid_attention.utils.global_context import (
     rapid_attention_global_context as GCTX,

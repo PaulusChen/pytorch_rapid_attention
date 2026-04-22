@@ -133,7 +133,7 @@ def main():
                 current_lr = optimizer.param_groups[-1]["lr"]
                 eta_min = spend_time / max(step - start_step, 1) * (iter_per_epoch - step) // 60
                 logger(
-                    f"Epoch: {epoch} / {GCTX.train_config.epochs}, Step: {step}, IterPerEpoch: {iter_per_epoch}, Loss: {loss.item():.4f}, current_lr: {current_lr:.2e}, ETA: {eta_min:.0f}min"
+                    f"Epoch: {epoch} / {GCTX.train_config.epochs}, Step: {step}/{iter_per_epoch}, Loss: {current_logits_loss:.4f}, current_lr: {current_lr:.8f}, ETA: {eta_min:.0f}min"
                 )
                 if trainer_ctx.wandb is not None:
                     trainer_ctx.wandb.log(

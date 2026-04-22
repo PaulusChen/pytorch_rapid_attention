@@ -28,9 +28,9 @@
         "hidden_act": "silu"
     },
     "train_config": {
-        "pre_train_data_relative_path": "stepfun-ai/Step-3.5-Flash-SFT/pretrain_data_clean.jsonl",
-        "sft_train_data_relative_path": "stepfun-ai/Step-3.5-Flash-SFT/sft_data_clean.jsonl",
-        "epochs": 8,
+        "pre_train_data_relative_path": "minimind/pretrain_t2t_mini.jsonl",
+        "sft_train_data_relative_path": "minimind/sft_t2t_mini.jsonl",
+        "epochs": 2,
         "use_wandb": true,
         "wandb_project": "paulchen-testing",
         "batch_size": 32,
@@ -39,7 +39,7 @@
         "num_workers": 4,
         "accumulation_steps": 8,
         "grad_clip": 1.0,
-        "log_interval": 1000,
+        "log_interval": 100,
         "save_interval": 1000,
         "output_relative_dir": "checkpoints"
     },

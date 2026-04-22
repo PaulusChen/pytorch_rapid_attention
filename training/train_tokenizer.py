@@ -22,8 +22,6 @@ def tokenizer_texts_iter(data_path):
             # sample_ratio = 0.5
             # if random.random() > sample_ratio:
             #     continue
-            if random.random() > 0.1:
-                continue
             train_lines += 1
             try:
                 item = json.loads(line)
