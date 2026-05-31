@@ -1,5 +1,4 @@
 
-from hopper.setup import include_dirs
 import os
 import torch
 import glob
@@ -64,7 +63,7 @@ if debug_mode:
 this_dir = os.path.dirname(os.path.abspath(__file__))
 package_dir = os.path.join(this_dir, library_name)
 
-include_dirs = [os.path.join(package_dir, "include") / include_dirs]
+include_dirs = [os.path.join(package_dir, "include") ]
 
 csrc_dir = os.path.join(package_dir, "csrc")
 cpp_sources = glob.glob(os.path.join(csrc_dir, "*.cpp"), recursive=True)
