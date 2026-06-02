@@ -13,7 +13,7 @@ from torch.utils.cpp_extension import (
 
 library_name = "rapid_attention"
 
-py_limited_api = bool(torch.__version__ < "2.6.0")
+py_limited_api = False # bool(torch.__version__ < "2.6.0")
 
 debug_mode = os.environ.get("DEBUG", "0") == "1"
 use_cuda = os.getenv("USE_CUDA", "1") == "1"
@@ -40,7 +40,7 @@ extra_compile_args = {
         "-O3" if not debug_mode else "-O0",
         "-std=c++20",
         "-fdiagnostics-color=always",
-        "-DPy_LIMITED_API=0x03090000",
+        # "-DPy_LIMITED_API=0x03090000",
         f"-DTORCH_TARGET_VERSION=0x{torch_target_version:016x}",
     ], 
     "nvcc": [
@@ -92,7 +92,7 @@ ext_modules = [
 setup(
     name=library_name,
     version="0.0.1",
-    packages=find_packages(),
+    packages=find_packages(where=".", include=["rapid_attention*"]),
     ext_modules=ext_modules,
     install_requires=open("requirements.txt").read().splitlines(),
     description="Rapid Attention for PyTorch",
@@ -101,6 +101,7 @@ setup(
     author_email="chenpengsmail@qq.com",
     url="https://github.com/PaulusChen/pytorch_rapid_attention",
     cmdclass={"build_ext": BuildExtension},
-    options={"bdist_wheel": {"py_limited_api": "cp39"}} if py_limited_api else {},
+    options={}
+    # options={"bdist_wheel": {"py_limited_api": "cp39"}} if py_limited_api else {},
 )
 

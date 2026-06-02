@@ -1,27 +1,22 @@
 
-#include <Python.h>
+#include <torch/extension.h> 
+#include <cuda_runtime.h>
 
-#include <torch/csrc/stable/library.h>
-#include <torch/csrc/stable/ops.h>
-#include <torch/csrc/stable/tensor.h>
-#include <torch/headeronly/core/ScalarType.h>
-#include <torch/headeronly/macros/Macros.h>
+#include "cuda/flash_attention_operator.hpp"
 
-extern "C" {
-  /* Creates a dummy empty _C module that can be imported from Python.
-     The import from Python will load the .so consisting of this file
-     in this extension, so that the STABLE_TORCH_LIBRARY static initializers
-     below are run. */
-  PyObject* PyInit__C(void)
-  {
-      static struct PyModuleDef module_def = {
-          PyModuleDef_HEAD_INIT,
-          "_C",   /* name of module */
-          NULL,   /* module documentation, may be NULL */
-          -1,     /* size of per-interpreter state of the module,
-                     or -1 if the module keeps state in global variables. */
-          NULL,   /* methods */
-      };
-      return PyModule_Create(&module_def);
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  // 将 C++ 的 Flash Attention 前向函数绑定到 Python 模块中
+  m.def("forward", &rapid_flash_attention::flash_attention_forward,
+        py::arg("kernel_cfg"), py::arg("q"), py::arg("k"), py::arg("v"),
+        py::arg("o"), py::arg("benchmark") = false,
+        "Flash Attention forward (CUDA)");
+  // 为每个内核配置设置动态共享内存大小属性
+  for (const auto &[cfg, kernel] : rapid_flash_attention::forward_kernels) {
+    int smem_used = cfg.smem_bytes();
+    if (smem_used > 48 * 1024) {
+      cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel), cudaFuncAttributeMaxDynamicSharedMemorySize,
+                           smem_used);
+    }
   }
 }
