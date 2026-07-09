@@ -346,7 +346,7 @@ class BaseRapidAttentionTest:
 
     def _test_starndard(self, name, cfg):
         q, k, v = self.__class__.data[cfg.d_head]
-        result = ra.flash_attention(cfg, q, k, v)
+        result = ra.forward(cfg, q, k, v)
         fp16_result = self.__class__.pt_b16_results[cfg.d_head]
         fp32_result = self.__class__.pt_f32_results[cfg.d_head]
         
