@@ -19,6 +19,8 @@ debug_mode = os.environ.get("DEBUG", "0") == "1"
 use_cuda = os.getenv("USE_CUDA", "1") == "1"
 if debug_mode:
     print("Building in debug mode")
+else:
+    print("Building in release mode")
 
 use_cuda = use_cuda and torch.cuda.is_available() and (CUDA_HOME is not None)
 if not use_cuda:
@@ -67,11 +69,11 @@ include_dirs = [os.path.join(package_dir, "include") ]
 
 csrc_dir = os.path.join(package_dir, "csrc")
 cpp_sources = glob.glob(os.path.join(csrc_dir, "*.cpp"), recursive=True)
-print(f"!!!!!!!!!!cpp_sources: {cpp_sources}")
+print(f"cpp_sources: {cpp_sources}")
 
 cuda_dir = os.path.join(csrc_dir, "cuda")
 cuda_sources = glob.glob(os.path.join(cuda_dir, "*.cu"), recursive=True)
-print(f"!!!!!!!!!!cuda_sources: {cuda_sources}")
+print(f"cuda_sources: {cuda_sources}")
 
 if use_cuda:
     sources = cpp_sources + cuda_sources
