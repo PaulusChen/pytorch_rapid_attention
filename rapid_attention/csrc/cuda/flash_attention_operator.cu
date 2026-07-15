@@ -3,6 +3,7 @@
 #include "common.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <sys/types.h>
 #include <type_traits>
 #include <map>
 #include <tuple>
@@ -102,9 +103,17 @@ __device__ void ldmatrix_x4(T *load_from, uint32_t &a1, uint32_t &a2,
                  "{%0, %1, %2, %3}, [%4];"
                  : "=r"(a1), "=r"(a2), "=r"(a3), "=r"(a4)
                  : "r"(smem_ptr));
-    
-
 }
+
+template <typename T>
+__device__ void ldmatrix_x4_transpose(T *load_from, uint32_t &a1, uint32_t &a2, uint32_t &a3, uint32_t &a4) {
+    uint32_t smem_ptr = __cvta_generic_to_shared(load_from);
+    asm volatile("ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16"
+                 "{%0, %1, %2, %3}, [%4];"
+                 : "=r"(a1), "=r"(a2), "=r"(a3), "=r"(a4)
+                 : "r"(smem_ptr));
+}
+
 
 template <typename Kernel>
 __global__ void
