@@ -32,11 +32,13 @@
 #define MMA_C_REGS_PER_ROW 1
 #define MMA_C_REGS_PER_COL 2
 
-#define THR_COLS_PER_ACCUM_FRAGMENT 2
+#define N_REGS_PER_F32_ACCUM_FRAGMENT 2
 
 #define LDMATRIX_MAT_SIZE 8
 #define ROWS_PER_FRAGMENT LDMATRIX_MAT_SIZE
 #define COLS_PER_FRAGMENT LDMATRIX_MAT_SIZE
+
+#define GSM_LDST_ROWS_PER_ITER 4
 
 #define N_BUFFER_STAGES 2
 
@@ -89,8 +91,6 @@ constexpr int constexpr_log2_floor(int n) { return std::__bit_width(n) - 1; }
 
 constexpr int binary_to_pm1(int b) { return 2 * b - 1; }
 
-
-
 template <int N, typename value_t_>
 struct Array {
     using value_t = value_t_;
@@ -131,49 +131,5 @@ struct Array {
 
 template <int N, typename value_t, int Alignment = 16>
 struct __align__(Alignment) ArrayAligned : public Array<N, value_t> {};
-
-
-#define CHECK_CUDA(x)                                                          \
-    TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
-#define CHECK_CONTIGUOUS(x)                                                    \
-    TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_INPUT(x)                                                         \
-    CHECK_CUDA(x);                                                             \
-    CHECK_CONTIGUOUS(x)
-
-#ifndef CUDA_CHECK_AND_EXIT
-#define CUDA_CHECK_AND_EXIT(error)                                             \
-    {                                                                          \
-        auto status = static_cast<cudaError_t>(error);                         \
-        if (status != cudaSuccess) {                                           \
-            std::cout << cudaGetErrorString(status) << " " << __FILE__ << ":"  \
-                      << __LINE__ << std::endl;                                \
-            std::exit(status);                                                 \
-        }                                                                      \
-    }
-#endif
-
-#define CEIL_DIV(M, N) (((M) + (N) - 1) / (N))
-
-__device__ __forceinline__ bool is_cta_leader() { return threadIdx.x == 0; }
-
-inline int cuda_device_num_sms(int device) {
-    int sms;
-    cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
-    return sms;
-}
-
-inline int cuda_device_max_smem_bytes(int device) {
-    int max_smem;
-    cudaDeviceGetAttribute(&max_smem, cudaDevAttrMaxSharedMemoryPerBlockOptin,
-                           device);
-    return max_smem;
-}
-
-inline int cuda_device_compute_capability(int device) {
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, device);
-    return prop.major * 10 + prop.minor;
-}
 
 } // namespace rapid_flash_attention
