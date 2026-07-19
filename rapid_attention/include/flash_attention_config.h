@@ -118,7 +118,7 @@ template <FlashForwardKernelConfig CFG> struct ForwardKernelTileShapes {
   // 每个 warp 独立加载和计算的 Q/O 行数或分块数（tiles），
   // 这对应一个大小为 (B_r / n_warps, d_head) 的数据块（chunk）。
   static constexpr int QO_rows_per_warp = CFG.B_r / CFG.n_warps;
-  static constexpr int QO_fragments_perr_warp =
+  static constexpr int QO_fragments_per_warp =
       QO_rows_per_warp / ROWS_PER_FRAGMENT;
 
   // 对于 K/V 数据块，每个 warp 会独立加载一个 (B_c, d_head) 的分块（chunk），
@@ -193,50 +193,6 @@ struct TensorLDSTConfig {
   const bool load_entire_block_info_rf;
 
   const int mma_load_stages;
-};
-
-template <FlashForwardKernelConfig CFG> struct StaticForwardKernelConfig {
-  using accum_t = float;
-  using value_t = typename ::std::conditional_t<CFG.dtype == torch::kBFloat16,
-                                                nv_bfloat16, half>;
-
-  using N = ForwardKernelTileShapes<CFG>;
-
-  static constexpr bool async_copy = CFG.async_copy;
-  static constexpr int B_r = CFG.B_r;
-  static constexpr int B_c = CFG.B_c;
-  static constexpr int d_head = CFG.d_head;
-  static constexpr bool eager_load_blocks = CFG.eager_load_blocks;
-  static constexpr bool optimized_softmax = CFG.optimized_softmax;
-
-  static constexpr LDSTCommon Common{CFG.swizzled, CFG.async_copy};
-
-  static constexpr TensorLDSTConfig make_ldst_config(
-      TileLayout GSM, TileLayout RF, bool transposed, int block_size,
-      int warp_ldst_rows, bool compute_over_entire_block,
-      bool load_entire_block_into_rf = true, int mma_load_stages = 1) {
-    return TensorLDSTConfig{GSM,
-                            RF,
-                            Common,
-                            transposed,
-                            block_size,
-                            CFG.d_head,
-                            warp_ldst_rows,
-                            compute_over_entire_block,
-                            load_entire_block_into_rf,
-                            mma_load_stages};
-  }
-
-  static constexpr TensorLDSTConfig Q_LDST = make_ldst_config(
-                                                    { N::QO_fragments_per_warp, N::d_head_fragments },
-                                                    { N::QO_fragments_per_warp, N::Q_mma_load_K_fragments },
-                                                    false,
-                                                    CFG.B_r,
-                                                    N::QO_rows_per_warp,
-                                                    false,
-                                                    CFG.Q_mma_load_K_fragments == 0,
-                                                    N::Q_mma_load_stages);
-  using Q_t = MatrixLDST<Q_LDST, value_t>
 };
 
 struct ForwardKernelArgs {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "flash_attention_config.h"
 #include <map>
 #include <tuple>
 #include <type_traits>
@@ -290,5 +291,301 @@ FA_DEVICE_CONSTEXPR void convert_to_16_bit_dtype(float (&src_float)[M_fragments]
         }
     }
 }
+
+template <typename value_t, int N>
+struct RFVector {
+    static constexpr int size = N;
+    value_t regs[N];
+    FA_DEVICE_CONSTEXPR value_t &operator[](int idx) { return regs[idx]; }
+};
+
+template <typename value_t, int n_copies, int row_fragments, int col_fragments>
+struct RFMatrix {
+    using storage_t = std::conditional_t<sizeof(value_t) == 4, float, uint32_t>;
+    static constexpr int regs_per_fragment = sizeof(value_t) / 2;
+    static constexpr int rows = row_fragments;
+    static constexpr int cols = col_fragments * regs_per_fragment;
+
+    storage_t regs[n_copies][rows][cols];
+
+    FA_DEVICE_CONSTEXPR storage_t (&data(const int stage = 0))[rows][cols] {
+        return reinterpret_cast<storage_t(&)[rows][cols]>(regs[stage]);
+    }
+
+    FA_DEVICE_CONSTEXPR void zero() {
+        FA_UNROLL
+        for (int i = 0; i < n_copies; ++i) {
+            FA_UNROLL
+            for (int j = 0; j < rows; ++j) {
+                FA_UNROLL
+                for (int k = 0; k < cols; ++k) {
+                    regs[i][j][k] = 0;
+                }
+            }
+        }
+    }
+};
+
+// MatrixLDST 是一个对象，它为内存中的一个数据块（block）提供加载/存储（LDST）和类型转换（conversion）功能。
+// 该对象的作用范围涵盖所有内存层级（全局内存 GMEM、共享内存 SMEM 和寄存器文件 RF）。
+// 诚然，这个类承担了过多职责，但考虑到本项目的范围，我不想过度设计它。
+template <TensorLDSTConfig ldst, typename value_t, typename index_t = int64_t>
+struct MatrixLDST {
+    using matrix_storage_t = RFMatrix<value_t, ldst.mma_load_stages, ldst.RF.row_fragments, ldst.RF.col_fragments>;
+    using GM2SM_op = std::conditional_t<ldst.Common.async_copy, GM2SM_async<value_t>, GM2SM<value_t>>;
+
+    using SM2GM_op = SM2GM<value_t>;
+    static constexpr int mma_load_stages = ldst.mma_load_stages;
+    static constexpr bool load_entire_block_into_rf = ldst.load_entire_block_info_rf;
+    static constexpr bool transposed = ldst.transposed;
+
+    value_t *gmem_ptr;
+    index_t gmem_seq_stride;
+
+    //用于将数据分片从共享内存（smem）加载至寄存器内存（rmem）的内存寻址位置
+    value_t *smem_srm_ptr;
+
+    // 该内存地址用于线程束将Q、K、V从全局内存写入共享内存，
+    // 同时也用于将输出矩阵O从共享内存(smem)写回全局内存(gmem)。
+    value_t *smem_gsm_ptr;
+
+    const int lane_id;
+
+    matrix_storage_t storage;
+
+    FA_DEVICE MatrixLDST(value_t *gmem_block_ptr,
+                         index_t _gmem_seq_stride,
+                         value_t * _smem_ptr) : lane_id(threadIdx.x % WARP_SIZE) {
+        const int warp_rank = threadIdx.x / WARP_SIZE;
+        const index_t warp_seq = ldst.warp_ldst_rows * warp_rank;
+
+        gmem_seq_stride = _gmem_seq_stride;
+        gmem_ptr = gmem_block_ptr + warp_seq * gmem_seq_stride;
+
+        smem_gsm_ptr = _smem_ptr + warp_seq * ldst.smem_cols;
+        smem_srm_ptr = ldst.compute_over_entire_block ? _smem_ptr : smem_gsm_ptr;
+    }
+
+    FA_DEVICE_CONSTEXPR void zero() { storage.zero(); }
+
+    FA_DEVICE_CONSTEXPR typename matrix_storage_t::storage_t (&data(const int stage = 0))[matrix_storage_t::rows][matrix_storage_t::cols] {
+        return storage.data(stage);
+    }
+
+    FA_DEVICE_CONSTEXPR void advance_gmem_block() {
+        gmem_ptr += ldst.block_size * gmem_seq_stride;
+    }
+
+    FA_DEVICE_CONSTEXPR void copy_GM2SM() {
+        copy_block_GSM<GM2SM_op, ldst>(gmem_ptr, smem_gsm_ptr, gmem_seq_stride, lane_id);
+    }
+
+    FA_DEVICE_CONSTEXPR void copy_SM2GM() {
+        copy_block_GSM<SM2GM_op, ldst>(gmem_ptr, smem_gsm_ptr, gmem_seq_stride, lane_id);
+    }
+
+    FA_DEVICE_CONSTEXPR void copy_SM2RF(int stage = 0, int tile_offset = 0) {
+        if constexpr (!transposed) {
+            copy_warp_fragment_SM2RF<ldst, value_t>(storage.data(stage), smem_srm_ptr, lane_id, tile_offset);
+        } else {
+            // 转置
+            copy_warp_fragment_transposed_SM2RF<ldst, value_t>(storage.data(stage), smem_srm_ptr, lane_id, tile_offset);
+        }
+    }
+
+    FA_DEVICE_CONSTEXPR void copy_RF2SM() {
+        copy_warp_fragment_RF2SM<ldst, value_t>(data(), smem_srm_ptr, lane_id);
+    }
+};
+
+#define MMA_M 16
+#define MMA_N 8
+#define MMA_K 16
+
+#define MMA_M_FRAGMENTS_PER_ITER 2 // (MMA_M / LDMATRIX_MAT_SIZE)
+#define MMA_N_FRAGMENTS_PER_ITER 1 // (MMA_N / LDMATRIX_MAT_SIZE)
+#define MMA_K_FRAGMENTS_PER_ITER 2 // (MMA_K / LDMATRIX_MAT_SIZE)
+
+template<typename _A_t, typename _B_t, typename _C_t, int total_K_fragments, int load_K_fragments_per_iter, typename value_t_>
+struct GEMM {
+    using A_t = _A_t;
+    using B_t = _B_t;
+    using C_t = _C_t;
+    using value_t = value_t_;
+
+    static constexpr int TotalKTiles = total_K_fragments;
+    static constexpr int LoadKtilesPerIter = load_K_fragments_per_iter;
+
+    static constexpr bool DoubleBufferA = !A_t::load_entire_block_into_rf && A_t::mma_load_stages > 1;
+    static constexpr bool DoubleBufferB = !B_t::load_entire_block_into_rf && B_t::mma_load_stages > 1;
+    static constexpr bool DoubleBuffer = DoubleBufferA || DoubleBufferB;
+};
+
+template<typename value_t, const int M_fragments, const int N_fragments, const int K_fragments_A, const int K_fragments_B, typename accum_t = float>
+FA_DEVICE_CONSTEXPR void warp_fragment_mma_f32_accum(uint32_t (&regs_A)[M_fragments][K_fragments_A],
+                                                     uint32_t (&regs_B)[N_fragments][K_fragments_B],
+                                                     accum_t (&regs_C)[M_fragments][N_fragments * N_REGS_PER_F32_ACCUM_FRAGMENT],
+                                                     int A_col_fragment_offset = 0, int B_col_fragment_offset = 0) {
+    constexpr int K_iters = constexpr_min(K_fragments_A, K_fragments_B);
+    FA_UNROLL
+    for (int k = 0; k < K_iters; k += MMA_K_FRAGMENTS_PER_ITER) {
+        FA_UNROLL
+        for (int m = 0; m < M_fragments; m += MMA_M_FRAGMENTS_PER_ITER) {
+            FA_UNROLL
+            for (int n = 0; n < N_fragments; n += MMA_N_FRAGMENTS_PER_ITER) {
+                mma_m16n8k16_f32_accum<value_t>(
+                    regs_C[m][n * 2],
+                    regs_C[m][n * 2 + 1],
+                    regs_C[m + 1][n * 2],
+                    regs_C[m + 1][n * 2 + 1],
+                    regs_A[m][k + A_col_fragment_offset],
+                    regs_A[m + 1][k + A_col_fragment_offset],
+                    regs_A[m][k + 1 + A_col_fragment_offset],
+                    regs_A[m + 1][k + 1 + A_col_fragment_offset],
+                    regs_B[n][k + B_col_fragment_offset],
+                    regs_B[n][k + 1 + B_col_fragment_offset],
+                    regs_C[m][n * 2],
+                    regs_C[m][n * 2 + 1],
+                    regs_C[m + 1][n * 2],
+                    regs_C[m + 1][n * 2 + 1]);
+            }
+        }
+    }
 }
+
+template <typename GEMM>
+FA_DEVICE_CONSTEXPR void matmul(typename GEMM::A_t &A,
+                                typename GEMM::B_t &B,
+                                typename GEMM::C_t &C) {
+    using A_t = typename GEMM::A_t;
+    using B_t = typename GEMM::B_t;
+    using value_t = typename GEMM::value_t;
+
+    constexpr int A_stage_toggle = A_t::mma_load_stages - 1;
+    constexpr int B_stage_toggle = B_t::mma_load_stages - 1;
+
+    int A_stage = 0;
+    int B_stage = 0;
+
+    if constexpr (GEMM::DoubleBufferA) {
+        A.copy_SM2RF(A_stage);
+    }
+
+    if constexpr (GEMM::DoubleBufferB) {
+        B.copy_SM2RF(B_stage);
+    }
+
+    FA_UNROLL
+    for (int k_outer_fragment = 0; k_outer_fragment < GEMM::TotalKTiles; k_outer_fragment += GEMM::LoadKTilesPerIter) {
+        if constexpr (!A_t::load_entire_block_into_rf || !B_t::load_entire_block_into_rf) {
+            int k_load_fragment = k_outer_fragment + (GEMM::DoubleBuffer ? GEMM::LoadKTilesPerIter : 0);
+            if (k_load_fragment < GEMM::TotalKTiles) {
+                if constexpr (!A_t::load_entire_block_info_rf) {
+                    A.copy_SM2RF(A_stage_toggle ^ A_stage, k_load_fragment);
+                }
+                if constexpr (!B_t::load_entire_block_info_rf) {
+                    B.copy_SM2RF(B_stage_toggle ^ B_stage, k_load_fragment);
+                }
+            }
+        }
+
+        int A_col_offset = A_t::load_entire_block_into_rf ? k_outer_fragment : 0;
+        int B_col_offset = B_t::load_entire_block_into_rf ? k_outer_fragment : 0;
+        warp_fragment_mma_f32_accm<value_t>(A.data(A_stage), B.data(B_stage), C.data(), A_col_offset, B_col_offset);
+        A_stage ^= A_stage_toggle;
+        B_stage ^= B_stage_toggle;
+    }
+}
+
+template <FlashForwardKernelConfig CFG> struct StaticForwardKernelConfig {
+  using accum_t = float;
+  using value_t = typename ::std::conditional_t<CFG.dtype == torch::kBFloat16,
+                                                nv_bfloat16, half>;
+
+  using N = ForwardKernelTileShapes<CFG>;
+
+  static constexpr bool async_copy = CFG.async_copy;
+  static constexpr int B_r = CFG.B_r;
+  static constexpr int B_c = CFG.B_c;
+  static constexpr int d_head = CFG.d_head;
+  static constexpr bool eager_load_blocks = CFG.eager_load_blocks;
+  static constexpr bool optimized_softmax = CFG.optimized_softmax;
+
+  static constexpr LDSTCommon Common{CFG.swizzled, CFG.async_copy};
+
+  static constexpr TensorLDSTConfig make_ldst_config(
+      TileLayout GSM, TileLayout RF, bool transposed, int block_size,
+      int warp_ldst_rows, bool compute_over_entire_block,
+      bool load_entire_block_into_rf = true, int mma_load_stages = 1) {
+    return TensorLDSTConfig{GSM,
+                            RF,
+                            Common,
+                            transposed,
+                            block_size,
+                            CFG.d_head,
+                            warp_ldst_rows,
+                            compute_over_entire_block,
+                            load_entire_block_into_rf,
+                            mma_load_stages};
+  }
+
+  static constexpr TensorLDSTConfig Q_LDST = make_ldst_config(
+                                                    { N::QO_fragments_per_warp, N::d_head_fragments },
+                                                    { N::QO_fragments_per_warp, N::Q_mma_load_K_fragments },
+                                                    false,
+                                                    CFG.B_r,
+                                                    N::QO_rows_per_warp,
+                                                    false,
+                                                    CFG.Q_mma_load_K_fragments == 0,
+                                                    N::Q_mma_load_stages);
+  using Q_t = MatrixLDST<Q_LDST, value_t>;
+
+  static constexpr TensorLDSTConfig K_LDST = make_ldst_config(
+                                                    { N::KV_ldst_fragments_per_warp, N::d_head_fragments},
+                                                    { N::KV_calc_fragments, N::K_mma_load_K_fragments},
+                                                    false,
+                                                    CFG.B_c,
+                                                    N::KV_ldst_rows_per_warp,
+                                                    true,
+                                                    CFG.K_mma_load_K_fragments == 0,
+                                                    N::K_mma_load_stages);
+  using K_t = MatrixLDST<K_LDST, value_t>;
+
+  static constexpr TensorLDSTConfig V_LDST = make_ldst_config(
+                                                    { N::KV_ldst_fragments_per_warp, N::d_head_fragments},
+                                                    { N::d_head_fragments, N::V_mma_load_K_fragments },
+                                                    true,
+                                                    CFG.B_c,
+                                                    N::KV_ldst_rows_per_warp,
+                                                    true,
+                                                    CFG.V_mma_load_K_fragments == 0,
+                                                    N::V_mma_load_stages);
+  using V_t = MatrixLDST<V_LDST, value_t>;
+
+  static constexpr TensorLDSTConfig O_LDST = make_ldst_config(
+                                                    { N::QO_fragments_per_warp, N::d_head_fragments },
+                                                    { N::QO_fragments_per_warp, N::d_head_fragments },
+                                                    false,
+                                                    CFG.B_r,
+                                                    N::QO_rows_per_warp,
+                                                    false,
+                                                    true);
+  using O_accum_t = MatrixLDST<O_LDST, accum_t>;
+  using O_value_t = MatrixLDST<O_LDST, value_t>;
+
+  // S/P 在内核的整个执行期间完全保持在寄存器文件（RF）中。
+  static constexpr TensorLDSTConfig S_LDST = make_ldst_config(
+                                                    { N::QO_fragments_per_warp, N::KV_calc_fragments }, 
+                                                    { N::QO_fragments_per_warp, N::KV_calc_fragments }, 
+                                                    CFG.B_r,
+                                                    false,
+                                                    0,
+                                                    false);
+  using S_accum_t = MatrixLDST<S_LDST, accum_t>;
+  using P_value_t = MatrixLDST<S_LDST, value_t>;
+
+  using S_QK_GEMM = GEMM<Q_t, K_t, S_accum_t, N::d_head_fragments, constexpr_min(N::Q_mma_load_K_fragments, N::K_mma_load_K_fragments), value_t>;
+};
+
+} // rapid_flash_attention
 
