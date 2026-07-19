@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include "cuda/flash_attention_operator.hpp"
+#include "cuda/flash_attention_kernel.hpp"
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
