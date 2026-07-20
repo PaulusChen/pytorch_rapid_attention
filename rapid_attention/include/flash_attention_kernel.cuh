@@ -8,7 +8,7 @@
 namespace rapid_flash_attention {
 
 template <typename value_t>
-__device__ void
+FA_DEVICE void
 mma_m16n8k16_f32_accum(
     float &d1, float &d2, float &d3, float &d4,
     uint32_t const &a1, uint32_t const &a2, uint32_t const &a3, uint32_t const &a4,
@@ -33,15 +33,14 @@ mma_m16n8k16_f32_accum(
         .m16n8k32}; 
         .kind = {.kind::f8f6f4};
         */
-        asm volatile("mma.sync,aligned.m16n8k16.row.col.f32.b16.b16.f32 "
-                    " {%0, %1, %2, %3}, "
-                    " {%4, %5, %6, %7}, "
-                    " {%8, %9}, "
-                    " {%10, %11, %12, %13}; "
-                    : "=f"(d1), "=f"(d2), "=f"(d3), "=f"(d4)
-                    : "r"(a1), "r"(a2), "r"(a3), "r"(a4),
-                    "r"(b1), "r"(b2),
-                    "f"(c1), "f"(c2), "f"(c3), "f"(c4));
+        asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                     " { %0, %1, %2, %3 }, "
+                     " { %4, %5, %6, %7 }, "
+                     " { %8, %9 }, "
+                     " { %10, %11, %12, %13 }; "
+                     : "=f"(d1), "=f"(d2), "=f"(d3), "=f"(d4)
+                     : "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(b1), "r"(b2),
+                       "f"(c1), "f"(c2), "f"(c3), "f"(c4));
     } else {
         /*
         Half precision floating point type: 
@@ -53,23 +52,21 @@ mma_m16n8k16_f32_accum(
         .ctype = {.f16, .f32}; 
         .dtype = {.f16, .f32};
         */
-        asm volatile("mma.sync,aligned.m16n8k16.row.col.f32.f16.f16.f32 "
-                    " {%0, %1, %2, %3}, "
-                    " {%4, %5, %6, %7}, "
-                    " {%8, %9}, "
-                    " {%10, %11, %12, %13}; "
-                    : "=f"(d1), "=f"(d2), "=f"(d3), "=f"(d4)
-                    : "r"(a1), "r"(a2), "r"(a3), "r"(a4),
-                    "r"(b1), "r"(b2),
-                    "f"(c1), "f"(c2), "f"(c3), "f"(c4));
+        asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+                     " { %0, %1, %2, %3 }, "
+                     " { %4, %5, %6, %7 }, "
+                     " { %8, %9 }, "
+                     " { %10, %11, %12, %13 }; "
+                     : "=f"(d1), "=f"(d2), "=f"(d3), "=f"(d4)
+                     : "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(b1), "r"(b2),
+                       "f"(c1), "f"(c2), "f"(c3), "f"(c4));
     }
 }
 
 template <typename T>
-__device__ void ldmatrix_x4(T *load_from, uint32_t &a1, uint32_t &a2,
-                            uint32_t &a3, uint32_t &a4) {
+FA_DEVICE void ldmatrix_x4(T *load_from, uint32_t &a1, uint32_t &a2,
+                           uint32_t &a3, uint32_t &a4) {
     uint32_t smem_ptr = __cvta_generic_to_shared(load_from);
-
     asm volatile("ldmatrix.sync.aligned.x4.m8n8.shared.b16"
                  "{%0, %1, %2, %3}, [%4];"
                  : "=r"(a1), "=r"(a2), "=r"(a3), "=r"(a4)
@@ -77,7 +74,8 @@ __device__ void ldmatrix_x4(T *load_from, uint32_t &a1, uint32_t &a2,
 }
 
 template <typename T>
-__device__ void ldmatrix_x4_transpose(T *load_from, uint32_t &a1, uint32_t &a2, uint32_t &a3, uint32_t &a4) {
+FA_DEVICE void ldmatrix_x4_transpose(T *load_from, uint32_t &a1, uint32_t &a2,
+                                     uint32_t &a3, uint32_t &a4) {
     uint32_t smem_ptr = __cvta_generic_to_shared(load_from);
     asm volatile("ldmatrix.sync.aligned.x4.trans.m8n8.shared.b16"
                  "{%0, %1, %2, %3}, [%4];"
@@ -105,14 +103,14 @@ FA_DEVICE void cp_async_wait() {
 }
 
 template <int size, typename T>
-__device__ void cp_async(T *smem_to, const T *gmem_from) {
-    static_assert(size == 16);
-
+FA_DEVICE void cp_async(T *smem_to, T *gmem_from) {
     uint32_t smem_ptr = __cvta_generic_to_shared(smem_to);
-    asm volatile("cp.async.ca.shared.global [%0], [%1], %2;"
+    // The .cg option bypasses the L1 cache.
+    asm volatile("cp.async.cg.shared.global.L2::128B [%0], [%1], %2;"
                  :
                  : "r"(smem_ptr), "l"(gmem_from), "n"(size));
 }
+
 
 template <typename T>
 struct GM2SM_async {
