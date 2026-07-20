@@ -24,7 +24,7 @@ scale_S_accum(accum_t (&S_accum)[QO_fragments][KV_accum_fragments],
 }
 
 template <int QO_fragments, int KV_accum_fragments, typename accum_t = float>
-FA_DEVICE void
+FA_DEVICE_CONSTEXPR void
 calc_row_max(accum_t (&S_accum)[QO_fragments][KV_accum_fragments],
              accum_t (&m_next)[QO_fragments], accum_t (&m_cur)[QO_fragments]) {
   FA_UNROLL
@@ -43,13 +43,12 @@ calc_row_max(accum_t (&S_accum)[QO_fragments][KV_accum_fragments],
   }
 }
 
-/*
 template <bool optimized_softmax, int QO_fragments, int d_head_accum_fragments,
           typename accum_t = float>
-FA_DEVICE void
+FA_DEVICE_CONSTEXPR void
 scale_l_O(accum_t (&m_next)[QO_fragments], accum_t (&m_cur)[QO_fragments],
           accum_t (&l)[QO_fragments],
-          accum_t (&O - accum)[QO_fragments][d_head_accum_fragments],
+          accum_t (&O_accum)[QO_fragments][d_head_accum_fragments],
           accum_t softmax_scale) {
   FA_UNROLL
   for (int q = 0; q < QO_fragments; ++q) {
@@ -66,11 +65,10 @@ scale_l_O(accum_t (&m_next)[QO_fragments], accum_t (&m_cur)[QO_fragments],
     }
   }
 }
-//*/
 
 template <bool optimized_softmax, int QO_fragments, int KV_accum_fragments,
           typename accum_t = float>
-FA_DEVICE void
+FA_DEVICE_CONSTEXPR void
 exponentiate_tensor(accum_t (&S_accum)[QO_fragments][KV_accum_fragments],
                     accum_t (&m)[QO_fragments], accum_t softmax_scale) {
   FA_UNROLL
@@ -92,7 +90,7 @@ exponentiate_tensor(accum_t (&S_accum)[QO_fragments][KV_accum_fragments],
 
 template <int QO_fragments, int d_head_accum_fragments,
           typename accum_t = float>
-FA_DEVICE void
+FA_DEVICE_CONSTEXPR void
 update_row_exp_sum(accum_t (&P_accum)[QO_fragments][d_head_accum_fragments],
                    accum_t (&l)[QO_fragments]) {
   FA_UNROLL
@@ -106,7 +104,7 @@ update_row_exp_sum(accum_t (&P_accum)[QO_fragments][d_head_accum_fragments],
 
 template <int QO_fragments, int d_head_accum_fragments,
           typename accum_t = float>
-FA_DEVICE void final_softmax_normalization(
+FA_DEVICE_CONSTEXPR void final_softmax_normalization(
     accum_t (&O_accum)[QO_fragments][d_head_accum_fragments],
     accum_t (&l)[QO_fragments]) {
   FA_UNROLL
@@ -249,8 +247,8 @@ flash_forward_kernel(__grid_constant__ const ForwardKernelArgs args) {
     }
 
     calc_row_max(S_accum.data(), m_next, m);
-    //scale_l_O<Kernel::optimized_softmax>(m_next, m, l O_accum.data(),
-    //                                     softmax_scale);
+    scale_l_O<Kernel::optimized_softmax>(m_next, m, l, O_accum.data(),
+                                         softmax_scale);
     exponentiate_tensor<Kernel::optimized_softmax>(S_accum.data(), m_next,
                                                    softmax_scale);
     update_row_exp_sum(S_accum.data(), l);
