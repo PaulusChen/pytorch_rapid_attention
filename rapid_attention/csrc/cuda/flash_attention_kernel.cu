@@ -265,7 +265,7 @@ flash_forward_kernel(__grid_constant__ const ForwardKernelArgs args) {
       cp_async_wait<0, async>();
       __syncthreads();
     }
-    if constexpr (V_t::load_entire_block_info_rf) {
+    if constexpr (V_t::load_entire_block_into_rf) {
       V.copy_SM2RF();
     }
     matmul<typename Kernel::O_PV_GEMM>(P_b16, V, O_accum);

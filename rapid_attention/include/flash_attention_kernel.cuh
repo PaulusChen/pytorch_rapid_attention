@@ -85,18 +85,23 @@ __device__ void ldmatrix_x4_transpose(T *load_from, uint32_t &a1, uint32_t &a2, 
                  : "r"(smem_ptr));
 }
 
-__device__ void cp_async_commit() {
-    // 划清批次界限。它将自上一个 commit_group 以来发起的所有 cp.async 操作，打包成一个新的“group”
-    asm volatile("cp.async.commit_group;");
+template <bool async>
+FA_DEVICE void cp_async_commit() {
+    if constexpr (async) {
+        // 划清批次界限。它将自上一个 commit_group 以来发起的所有 cp.async 操作，打包成一个新的“group”
+        asm volatile("cp.async.commit_group;");
+    }
 }
 
-template <int ngroups>
-__device__ void cp_async_wait() {
+template <int ngroups, bool async>
+FA_DEVICE void cp_async_wait() {
     // cp.async.wait_group 指令将使执行线程等待，
     // 直到最近 N 个或更少的 cp.async 组（cp-async-groups）处于未完成（pending）状态，
     // 并且所有由执行线程提交的更早的 cp.async 组都已完成。
     // N 的本质，是定义了一个“滑动窗口”，决定了有多少批次的异步拷贝任务可以“在途”（尚未完成），从而实现计算和拷贝的重叠。
-    asm volatile("cp.async.wait_group %0;" ::"n"(ngroups));
+    if constexpr (async) {
+        asm volatile("cp.async.wait_group %0;" ::"n"(ngroups));
+    }
 }
 
 template <int size, typename T>
@@ -130,13 +135,40 @@ struct SM2GM {
     }
 };
 
+template <int col_fragments>
+FA_DEVICE_CONSTEXPR int swizzled_col_fragment(int row, int col_fragment) {
+    static_assert(col_fragments % ELEMS_PER_VEC4_ACCESS == 0,
+                  "# col tiles is a multiple of # elems");
+
+    // The % ELEMS_PER_VEC4_ACCESS makes sure that the swizzled column stays
+    // within the same 8 element window.
+    return (row % ELEMS_PER_VEC4_ACCESS) ^ col_fragment;
+}
+
+template <int col_fragments, bool swizzle>
+FA_DEVICE_CONSTEXPR int get_smem_col_fragment(const int row,
+                                              const int col_fragment) {
+    return swizzle ? swizzled_col_fragment<col_fragments>(row, col_fragment)
+                   : col_fragment;
+}
+
+template <const int col_fragments, const bool swizzled>
+FA_DEVICE_CONSTEXPR int get_smem_offset(const int row, const int col) {
+    const int offset = row * col_fragments + col;
+    if constexpr (swizzled) {
+        return swizzle_cute<col_fragments>(offset);
+    } else {
+        return offset;
+    }
+}
+
 // 将一个 (B_r, d_head) 或 (B_c, d_head) 的数据块从全局内存（GMEM）拷贝到
 // 共享内存（SMEM），或反向拷贝。
 // 每个 warp 独立加载一个 (seq_len_per_warp, d_head) 的数据块。
 // 每次内层迭代加载一个 (4, 64) 的分块（tile），其中每行由 8 个连续线程组成的组加载。
 // 在边缘情况（edge case）下，如果要加载一个 (128, 64) 的数据块且有 8 个 warp，每个 warp
 template <typename op, TensorLDSTConfig CFG, typename value_t, typename index_t = int64_t>
-FA_DEVICE_CONSTEXPR void copy_block_GSM(value_t **gmem, value_t **smem,
+FA_DEVICE_CONSTEXPR void copy_block_GSM(value_t *gmem, value_t *smem,
                                         index_t gmem_seq_stride, const int lane_id) {
     constexpr int n_row_iters = CFG.GSM.row_fragments * ROWS_PER_FRAGMENT / GSM_LDST_ROWS_PER_ITER;
 
@@ -197,7 +229,7 @@ FA_DEVICE_CONSTEXPR void copy_warp_fragments_SM2RF(uint32_t (&regs)[CFG.RF.row_f
 // 即寄存器内存维度 rmem(r_r, r_c) = (smem列数 / 8, smem行数 / 8)
 // 该逻辑用于拷贝 V（Value）矩阵
 template <TensorLDSTConfig CFG, typename value_t>
-FA_DEVICE_CONSTEXPR void copy_warp_fragment_transposed_SM2RF(uint32_t (&regs)[CFG.RF.row_fragments][CFG.RF.col_fragments], value_t **smem,
+FA_DEVICE_CONSTEXPR void copy_warp_fragment_transposed_SM2RF(uint32_t (&regs)[CFG.RF.row_fragments][CFG.RF.col_fragments], value_t *smem,
                                                               const int lane_id, const int row_fragment_offset = 0) {
     constexpr int row_fragments_per_iter = 2;
     constexpr int rows_per_iter = ROWS_PER_FRAGMENT * row_fragments_per_iter;
@@ -336,7 +368,7 @@ struct MatrixLDST {
 
     using SM2GM_op = SM2GM<value_t>;
     static constexpr int mma_load_stages = ldst.mma_load_stages;
-    static constexpr bool load_entire_block_into_rf = ldst.load_entire_block_info_rf;
+    static constexpr bool load_entire_block_into_rf = ldst.load_entire_block_into_rf;
     static constexpr bool transposed = ldst.transposed;
 
     value_t *gmem_ptr;
@@ -414,7 +446,7 @@ struct GEMM {
     using value_t = value_t_;
 
     static constexpr int TotalKTiles = total_K_fragments;
-    static constexpr int LoadKtilesPerIter = load_K_fragments_per_iter;
+    static constexpr int LoadKTilesPerIter = load_K_fragments_per_iter;
 
     static constexpr bool DoubleBufferA = !A_t::load_entire_block_into_rf && A_t::mma_load_stages > 1;
     static constexpr bool DoubleBufferB = !B_t::load_entire_block_into_rf && B_t::mma_load_stages > 1;
@@ -480,10 +512,10 @@ FA_DEVICE_CONSTEXPR void matmul(typename GEMM::A_t &A,
         if constexpr (!A_t::load_entire_block_into_rf || !B_t::load_entire_block_into_rf) {
             int k_load_fragment = k_outer_fragment + (GEMM::DoubleBuffer ? GEMM::LoadKTilesPerIter : 0);
             if (k_load_fragment < GEMM::TotalKTiles) {
-                if constexpr (!A_t::load_entire_block_info_rf) {
+                if constexpr (!A_t::load_entire_block_into_rf) {
                     A.copy_SM2RF(A_stage_toggle ^ A_stage, k_load_fragment);
                 }
-                if constexpr (!B_t::load_entire_block_info_rf) {
+                if constexpr (!B_t::load_entire_block_into_rf) {
                     B.copy_SM2RF(B_stage_toggle ^ B_stage, k_load_fragment);
                 }
             }
@@ -491,7 +523,7 @@ FA_DEVICE_CONSTEXPR void matmul(typename GEMM::A_t &A,
 
         int A_col_offset = A_t::load_entire_block_into_rf ? k_outer_fragment : 0;
         int B_col_offset = B_t::load_entire_block_into_rf ? k_outer_fragment : 0;
-        warp_fragment_mma_f32_accm<value_t>(A.data(A_stage), B.data(B_stage), C.data(), A_col_offset, B_col_offset);
+        warp_fragment_mma_f32_accum<value_t>(A.data(A_stage), B.data(B_stage), C.data(), A_col_offset, B_col_offset);
         A_stage ^= A_stage_toggle;
         B_stage ^= B_stage_toggle;
     }
@@ -585,6 +617,10 @@ template <FlashForwardKernelConfig CFG> struct StaticForwardKernelConfig {
   using P_value_t = MatrixLDST<S_LDST, value_t>;
 
   using S_QK_GEMM = GEMM<Q_t, K_t, S_accum_t, N::d_head_fragments, constexpr_min(N::Q_mma_load_K_fragments, N::K_mma_load_K_fragments), value_t>;
+
+  using O_PV_GEMM = GEMM<P_value_t, V_t, O_accum_t, N::KV_calc_fragments, N::V_mma_load_K_fragments, value_t>;
+
+  using row_statistics_t = RFVector<accum_t, N::QO_fragments_per_warp>;
 };
 
 } // rapid_flash_attention

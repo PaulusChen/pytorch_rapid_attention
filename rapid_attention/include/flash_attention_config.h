@@ -190,7 +190,7 @@ struct TensorLDSTConfig {
   const bool compute_over_entire_block;
 
   // 该 warp 是否将加载整个 block（数据块）到寄存器文件（RF）。
-  const bool load_entire_block_info_rf;
+  const bool load_entire_block_into_rf;
 
   const int mma_load_stages;
 };
