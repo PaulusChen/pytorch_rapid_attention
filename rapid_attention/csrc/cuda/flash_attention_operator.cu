@@ -1,13 +1,18 @@
 #include "flash_attention_operator.hpp"
+#include "flash_attention_config.h"
+#include "flash_attention_kernel.hpp"
 
 
 #include <sys/types.h>
 #include <type_traits>
+#include <iostream>
 #include <map>
 #include <tuple>
 #include <utility>
 #include <vector>
 
+#include <c10/cuda/CUDAGuard.h>
+#include "cuda_utils.cuh"
 #include "common.h"
 
 namespace rapid_flash_attention {
@@ -51,6 +56,7 @@ flash_attention_forward(const py::object &py_cfg, const torch::Tensor &TQ,
 
   // cudaGuard用来确保在函数执行期间使用正确的CUDA设备
   at::cuda::CUDAGuard device_guard{TQ.device()};
+  std::cout << "start flash attention forward!" << std::endl;
 
   // 检查计算能力，确保当前设备支持所需的功能
   const int compute_capability =
@@ -72,7 +78,7 @@ flash_attention_forward(const py::object &py_cfg, const torch::Tensor &TQ,
   const auto d_head = TQ.size(3);
   const FlashForwardKernelConfig cfg{py_to_cpp_kernel_config(py_cfg)};
   TORCH_CHECK(forward_kernels.contains(cfg),
-              "Kernel configuration was not found in flash_kernels.cuh");
+              "Kernel configuration was not found in forward_kernels");
 
   // 根据配置选择对应的CUDA内核函数指针
   const auto kernel = forward_kernels[cfg];

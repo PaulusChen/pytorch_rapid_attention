@@ -6,7 +6,6 @@
 #include "flash_attention_config.h"
 #include "flash_attention_kernel.cuh"
 #include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
 
 namespace rapid_flash_attention {
 

@@ -154,28 +154,32 @@ class QKVConfig:
 # ============================================================================
 def generate_qkv(cfg: QKVConfig):
     """
-    生成随机的 Q、K、V 张量用于测试
+    生成 Q、K、V 张量用于测试，数据值在 0~9 之间循环
     
     数据形状：
     - q: (batch_size, seq_len, n_heads, d_head)
     - k: (batch_size, seq_len, n_heads, d_head)
     - v: (batch_size, seq_len, n_heads, d_head)
     
-    所有张量使用标准正态分布（均值为 0，方差为 1）初始化
+    所有张量使用 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 循环填充，
+    方便单步调试时判断错误位置。
     
     Args:
         cfg: QKVConfig 配置对象
         
     Returns:
-        tuple: (q, k, v) 三个随机张量
+        tuple: (q, k, v) 三个张量
     """
-    q = torch.randn(
-        (cfg.batch_size, cfg.seq_len, cfg.n_heads, cfg.d_head),
-        dtype=cfg.dtype,
-        device=cfg.device,
-    )
-    k = torch.randn_like(q)  # 复用 q 的 shape、dtype、device
-    v = torch.randn_like(q)
+    total_elements = cfg.batch_size * cfg.seq_len * cfg.n_heads * cfg.d_head
+    target_shape = (cfg.batch_size, cfg.seq_len, cfg.n_heads, cfg.d_head)
+
+    base = torch.arange(total_elements, dtype=torch.int64, device=cfg.device) % 10
+    base = base.to(dtype=cfg.dtype).reshape(target_shape).contiguous()
+
+    # q, k, v 使用相同的数据便于调试对比
+    q = base.clone()
+    k = base.clone()
+    v = base.clone()
 
     return q, k, v
 
